@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imessage-analysis"
+version = "0.1.0"
+description = "Read and export your local iMessage history as a CLI or SDK."
+requires-python = ">=3.9"
+dependencies = []                # stdlib only
+
+[project.scripts]
+imsg = "imessage.__main__:main"
+
+[tool.setuptools]
+packages = ["imessage"]

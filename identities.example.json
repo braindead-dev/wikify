@@ -1,0 +1,14 @@
+{
+  "_comment": "Optional. Copy to identities.json to define your own merges. Nothing here is required; without it, names come from Contacts and chats are never merged. All values below are placeholders.",
+
+  "me": "Me",
+
+  "people": {
+    "Alice Example": ["+15551230001", "+15551230002", "alice@example.com"],
+    "Bob Example": ["+15551230003"]
+  },
+
+  "groups": {
+    "My Group Label": [101, 102, 103]
+  }
+}

@@ -1,0 +1,11 @@
+# exported conversations stay local
+data/*
+!data/.gitkeep
+
+# your personal merges/aliases stay local
+identities.json
+
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
