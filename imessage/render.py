@@ -14,7 +14,7 @@ def _reactions(reactions: dict) -> str:
 def format_message(m, *, ids: bool = False, with_date: bool = False) -> str:
     """One message as a transcript line. `ids` prefixes the citation #rowid at
     line-start (like a line number — works for events too); `with_date` adds the date."""
-    prefix = f"#{m.rowid} " if ids else ""
+    prefix = f"#{m.rowid}\t" if ids else ""        # tab gutter, like nl / cat -n
     stamp = m.ts.strftime("%Y-%m-%d %H:%M" if with_date else "%H:%M")
     if m.system:
         return f"{prefix}{stamp} * {m.sender} {m.system}"
