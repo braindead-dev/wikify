@@ -48,9 +48,16 @@ never treated as the same person unless you say so.
 | --- | --- |
 | `chats [--match TEXT] [--limit N] [--all] [--json]` | list chat rows |
 | `people [--limit N] [--all] [--json]` | list handles with message counts |
-| `export <ids...> \| --group NAME [--format txt\|json] [--out PATH]` | export to `data/` |
+| `export <ids...> \| --group NAME [--format txt\|json] [--ids] [--header] [--out PATH]` | export to `data/` |
 | `update [paths...]` | re-render past exports; reports an exact diff (`+N new`, span, senders, last message) |
+| `show <rowid> [--context N]` | resolve a `#rowid` citation back to the message + surrounding context |
 | `pick` (default) | interactive picker; comma-separate ids to merge |
+
+`--ids` tags each line with its stable `#rowid` (the message's permanent key) so
+agents can cite messages unambiguously as `[#rowid]`; resolve any citation with
+`show`. `--header` prepends a self-describing format/meta block — **off by
+default**, since the data file is meant to be chunked/prefixed by your own
+pipeline, not pasted whole. Both flags are remembered, so `update` reproduces them.
 
 Global: `--db PATH`, `--identities PATH`, `--no-contacts`.
 
@@ -67,8 +74,9 @@ with MessagesDB() as db:
     new = db.messages(638, since=cutoff)  # only messages after a datetime
     wm = db.max_message_id(638)           # exact watermark (a ROWID)
     delta = db.messages(638, after_id=wm) # only messages newer than a ROWID
-    text = db.export([512, 638], "txt")   # transcript string
-    data = db.export([512, 638], "json")  # structured dict
+    cite = db.message(83412, context=2)   # resolve a citation + surrounding msgs
+    text = db.export([512, 638], "txt", ids=True)   # transcript with #rowid tags
+    data = db.export([512, 638], "json")            # structured dict (id always present)
 ```
 
 `MessagesDB(path=None, contacts=True, identities=None)` — `identities` accepts a

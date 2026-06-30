@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 from .db import MessagesDB
+from .render import format_message
 
 STATE = Path("data") / ".state.json"
 
@@ -55,10 +56,10 @@ def _print_chats(chats):
     print()
 
 
-def _export(db, chat_ids, fmt, out=None, title=None):
+def _export(db, chat_ids, fmt, out=None, title=None, ids=False, header=False):
     """Render to disk, record an exact watermark, and report the diff vs last write."""
     chat_ids = [chat_ids] if isinstance(chat_ids, int) else list(chat_ids)
-    payload, meta, title = db.render(chat_ids, fmt, title)
+    payload, meta, title = db.render(chat_ids, fmt, title, ids=ids, header=header)
     text = json.dumps(payload, indent=2, ensure_ascii=False) if fmt == "json" else payload
     out = Path(out) if out else Path("data") / f"{_slug(title)}.{fmt}"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -66,9 +67,8 @@ def _export(db, chat_ids, fmt, out=None, title=None):
 
     state = _state()
     prev = state.get(str(out), {})
-    watermark = db.max_message_id(chat_ids)
-    state[str(out)] = {"chats": chat_ids, "format": fmt, "title": title,
-                       "messages": meta["message_count"], "watermark": watermark}
+    state[str(out)] = {"chats": chat_ids, "format": fmt, "title": title, "ids": ids, "header": header,
+                       "messages": meta["message_count"], "watermark": db.max_message_id(chat_ids)}
     _save_state(state)
 
     _report(db, chat_ids, title, out, meta, prev)
@@ -131,11 +131,22 @@ def cmd_people(db, args):
 
 def cmd_export(db, args):
     if args.group:
-        _export(db, db.group(args.group), args.format, args.out, args.title or args.group)
+        chat_ids, title = db.group(args.group), args.title or args.group
     elif args.chats:
-        _export(db, args.chats, args.format, args.out, args.title)
+        chat_ids, title = args.chats, args.title
     else:
         sys.exit("  give chat ids (e.g. `export 512 638`) or --group NAME")
+    _export(db, chat_ids, args.format, args.out, title, ids=args.ids, header=args.header)
+
+
+def cmd_show(db, args):
+    try:
+        window = db.message(args.rowid, context=args.context)
+    except KeyError as exc:
+        sys.exit(f"  {exc}")
+    for m in window:
+        marker = "►" if m.rowid == args.rowid else " "
+        print(f"  {marker} {format_message(m, ids=True, with_date=True)}")
 
 
 def cmd_update(db, args):
@@ -148,7 +159,8 @@ def cmd_update(db, args):
         if not entry:
             print(f"  ? {path}: not a known export, skipping")
             continue
-        _export(db, entry["chats"], entry["format"], path, entry["title"])
+        _export(db, entry["chats"], entry["format"], path, entry["title"],
+                ids=entry.get("ids", False), header=entry.get("header", False))
 
 
 def cmd_pick(db, args):
@@ -162,7 +174,7 @@ def cmd_pick(db, args):
         sys.exit("\n  cancelled.")
     if not ids or any(i not in valid for i in ids):
         sys.exit("  invalid selection.")
-    _export(db, ids, fmt, args.out)
+    _export(db, ids, fmt, args.out, ids=args.ids, header=args.header)
 
 
 # -- wiring ----------------------------------------------------------------
@@ -193,7 +205,14 @@ def main(argv=None):
     p.add_argument("--format", choices=("txt", "json"), default="txt")
     p.add_argument("--out", help="output path (default: data/<slug>.<fmt>)")
     p.add_argument("--title", help="override the conversation title")
+    p.add_argument("--ids", action="store_true", help="tag each line with its #rowid for citing")
+    p.add_argument("--header", action="store_true", help="prepend a self-describing format/meta header")
     p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("show", help="resolve a #rowid citation back to the message")
+    p.add_argument("rowid", type=int, help="message rowid (from an --ids export)")
+    p.add_argument("--context", type=int, default=2, help="messages of context on each side")
+    p.set_defaults(func=cmd_show)
 
     p = sub.add_parser("update", help="refresh previous exports to current state")
     p.add_argument("files", nargs="*", help="specific export paths (default: all)")
@@ -202,13 +221,15 @@ def main(argv=None):
     p = sub.add_parser("pick", help="interactive picker (default command)")
     p.add_argument("--limit", type=int, default=25)
     p.add_argument("--out")
+    p.add_argument("--ids", action="store_true", help="tag each line with its #rowid for citing")
+    p.add_argument("--header", action="store_true", help="prepend a self-describing format/meta header")
     p.set_defaults(func=cmd_pick)
 
     args = parser.parse_args(argv)
     db = _open(args)
     try:
         if args.cmd is None:
-            args.limit, args.out = 25, None
+            args.limit, args.out, args.ids, args.header = 25, None, False, False
             cmd_pick(db, args)
         else:
             args.func(db, args)

@@ -322,11 +322,25 @@ class MessagesDB:
 
         return messages
 
-    def export(self, chat_ids, fmt="txt", title=None):
-        """Render the given chats as a transcript string (txt) or dict (json)."""
-        return self.render(chat_ids, fmt, title)[0]
+    def message(self, rowid, context=0) -> list[Message]:
+        """Resolve a citation: the message with this ROWID, plus `context`
+        messages on each side (same chat). Raises KeyError if it isn't a
+        standalone message (e.g. it's a folded-in reaction)."""
+        row = self._con.execute(
+            "SELECT chat_id FROM chat_message_join WHERE message_id = ?", (rowid,)).fetchone()
+        if row is None:
+            raise KeyError(f"no message with rowid {rowid}")
+        msgs = self.messages(row[0])
+        idx = next((i for i, m in enumerate(msgs) if m.rowid == rowid), None)
+        if idx is None:
+            raise KeyError(f"message {rowid} is not a standalone message (reaction/empty)")
+        return msgs[max(0, idx - context): idx + context + 1]
 
-    def render(self, chat_ids, fmt="txt", title=None):
+    def export(self, chat_ids, fmt="txt", title=None, ids=False, header=False):
+        """Render the given chats as a transcript string (txt) or dict (json)."""
+        return self.render(chat_ids, fmt, title, ids=ids, header=header)[0]
+
+    def render(self, chat_ids, fmt="txt", title=None, ids=False, header=False):
         """Like export(), but also returns (payload, meta, title) for callers
         that need the metadata without re-parsing the output."""
         from . import render as renderer
@@ -346,5 +360,6 @@ class MessagesDB:
             "last_message": ts(body[-1]) if body else None,
             "chat_rowids": list(chat_ids),
         }
-        payload = renderer.as_json(title, meta, msgs) if fmt == "json" else renderer.as_txt(title, meta, msgs)
+        payload = renderer.as_json(title, meta, msgs) if fmt == "json" \
+            else renderer.as_txt(title, meta, msgs, ids=ids, header=header)
         return payload, meta, title
