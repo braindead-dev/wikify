@@ -12,15 +12,15 @@ def _reactions(reactions: dict) -> str:
 
 
 def format_message(m, *, ids: bool = False, with_date: bool = False) -> str:
-    """One message as a transcript line. `ids` appends the citation #rowid;
-    `with_date` includes the date (used outside day-grouped context)."""
+    """One message as a transcript line. `ids` prefixes the citation #rowid at
+    line-start (like a line number — works for events too); `with_date` adds the date."""
+    prefix = f"#{m.rowid} " if ids else ""
     stamp = m.ts.strftime("%Y-%m-%d %H:%M" if with_date else "%H:%M")
     if m.system:
-        return f"{stamp} * {m.sender} {m.system}"
-    tag = f" #{m.rowid}" if ids else ""
+        return f"{prefix}{stamp} * {m.sender} {m.system}"
     media = "".join(f"[{t}] " for t in m.attachments)
     reply = f'(re "{m.reply_to}…") ' if m.reply_to else ""
-    line = f"{stamp} {m.sender}{tag}: {media}{reply}{m.text}".replace("\n", " ⏎ ").rstrip()
+    line = f"{prefix}{stamp} {m.sender}: {media}{reply}{m.text}".replace("\n", " ⏎ ").rstrip()
     if m.edited:
         line += " (edited)"
     if m.reactions:
@@ -29,7 +29,7 @@ def format_message(m, *, ids: bool = False, with_date: bool = False) -> str:
 
 
 def _header(title: str, meta: dict, ids: bool) -> str:
-    cite = "#NNNNN after a name is the stable message id — cite as [#NNNNN].\n#   " if ids else ""
+    cite = "Lines start with #NNNNN — the stable message id; cite as [#NNNNN].\n#   " if ids else ""
     return (
         f"# {title} — iMessage transcript\n"
         f"# Participants: {', '.join(meta['participants'])}\n"

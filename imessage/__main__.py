@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 from .db import MessagesDB
+from .identity import load_identities
 from .render import format_message
 
 STATE = Path("data") / ".state.json"
@@ -45,6 +46,18 @@ def _state() -> dict:
 def _save_state(state: dict):
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(json.dumps(state, indent=2))
+
+
+def _ids_path(args) -> Path:
+    return Path(args.identities) if args.identities else Path("identities.json")
+
+
+def _save_ids(args, data: dict):
+    _ids_path(args).write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+
+
+def _dedupe(seq) -> list:
+    return list(dict.fromkeys(seq))
 
 
 def _print_chats(chats):
@@ -149,6 +162,58 @@ def cmd_show(db, args):
         print(f"  {marker} {format_message(m, ids=True, with_date=True)}")
 
 
+def cmd_alias(db, args):
+    data = load_identities(_ids_path(args))
+    people = data.setdefault("people", {})
+    people[args.name] = _dedupe(people.get(args.name, []) + args.handles)
+    _save_ids(args, data)
+    print(f"  ✓ {args.name}: {', '.join(people[args.name])}")
+
+
+def cmd_rename(db, args):
+    data = load_identities(_ids_path(args))
+    if args.old == data.get("me", "Me"):                      # rename yourself
+        data["me"] = args.new
+        _save_ids(args, data)
+        print(f"  ✓ me: {args.old} -> {args.new}")
+        return
+    people = data.setdefault("people", {})
+    if args.old in people:                                    # rename an existing alias
+        handles = people.pop(args.old)
+    else:                                                     # rename a contact-resolved name
+        handles = [h.value for h in db.handles() if h.name == args.old]
+        if not handles:
+            sys.exit(f"  no person or contact named {args.old!r}")
+    people[args.new] = _dedupe(people.get(args.new, []) + handles)
+    _save_ids(args, data)
+    print(f"  ✓ {args.old} -> {args.new}  ({len(people[args.new])} handle(s))")
+
+
+def cmd_group(db, args):
+    data = load_identities(_ids_path(args))
+    unknown = [c for c in args.chats if c not in {x.rowid for x in db.chats()}]
+    if unknown:
+        print(f"  ! note: not active chat ids: {unknown}")
+    data.setdefault("groups", {})[args.label] = args.chats
+    _save_ids(args, data)
+    print(f"  ✓ group {args.label!r}: chats {args.chats}")
+
+
+def cmd_identities(db, args):
+    data = load_identities(_ids_path(args))
+    if not data:
+        print("  no identities yet — use `alias`, `rename`, or `group` to start one.")
+        return
+    if data.get("me"):
+        print(f"\n  me: {data['me']}")
+    for section, fmt in (("people", lambda v: ", ".join(v)), ("groups", str)):
+        if data.get(section):
+            print(f"\n  {section}:")
+            for key, val in data[section].items():
+                print(f"    {key}: {fmt(val)}")
+    print()
+
+
 def cmd_update(db, args):
     state = _state()
     targets = args.files or list(state)
@@ -214,6 +279,24 @@ def main(argv=None):
     p.add_argument("--context", type=int, default=2, help="messages of context on each side")
     p.set_defaults(func=cmd_show)
 
+    p = sub.add_parser("alias", help="merge handles under one person (writes identities.json)")
+    p.add_argument("name", help="the person's display name")
+    p.add_argument("handles", nargs="+", help="phone(s)/email(s) to merge under that name")
+    p.set_defaults(func=cmd_alias, needs_db=False)
+
+    p = sub.add_parser("rename", help="rename a person or yourself (writes identities.json)")
+    p.add_argument("old", help="current name (a contact name, an alias, or your 'me' label)")
+    p.add_argument("new", help="new name")
+    p.set_defaults(func=cmd_rename)
+
+    p = sub.add_parser("group", help="name a set of chats (writes identities.json)")
+    p.add_argument("label", help="the group label")
+    p.add_argument("chats", nargs="+", type=int, help="chat rowid(s) in the group")
+    p.set_defaults(func=cmd_group)
+
+    p = sub.add_parser("identities", help="show current merges, aliases, and groups")
+    p.set_defaults(func=cmd_identities, needs_db=False)
+
     p = sub.add_parser("update", help="refresh previous exports to current state")
     p.add_argument("files", nargs="*", help="specific export paths (default: all)")
     p.set_defaults(func=cmd_update)
@@ -226,7 +309,7 @@ def main(argv=None):
     p.set_defaults(func=cmd_pick)
 
     args = parser.parse_args(argv)
-    db = _open(args)
+    db = _open(args) if getattr(args, "needs_db", True) else None
     try:
         if args.cmd is None:
             args.limit, args.out, args.ids, args.header = 25, None, False, False
@@ -234,7 +317,8 @@ def main(argv=None):
         else:
             args.func(db, args)
     finally:
-        db.close()
+        if db is not None:
+            db.close()
 
 
 if __name__ == "__main__":

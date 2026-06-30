@@ -52,12 +52,28 @@ never treated as the same person unless you say so.
 | `update [paths...]` | re-render past exports; reports an exact diff (`+N new`, span, senders, last message) |
 | `show <rowid> [--context N]` | resolve a `#rowid` citation back to the message + surrounding context |
 | `pick` (default) | interactive picker; comma-separate ids to merge |
+| `alias <name> <handle...>` | merge handles under one person |
+| `rename <old> <new>` | rename a person, a contact name, or yourself |
+| `group <label> <chatid...>` | name a set of chats (use it via `export --group`) |
+| `identities` | show current merges, aliases, and groups |
 
-`--ids` tags each line with its stable `#rowid` (the message's permanent key) so
-agents can cite messages unambiguously as `[#rowid]`; resolve any citation with
-`show`. `--header` prepends a self-describing format/meta block — **off by
-default**, since the data file is meant to be chunked/prefixed by your own
-pipeline, not pasted whole. Both flags are remembered, so `update` reproduces them.
+`--ids` prefixes each line with its stable `#rowid` at line-start (the message's
+permanent key — works for system events too) so agents can cite unambiguously as
+`[#rowid]`; resolve any citation with `show`. `--header` prepends a
+self-describing format/meta block — **off by default**, since the data file is
+meant to be chunked/prefixed by your own pipeline, not pasted whole. Both flags
+are remembered, so `update` reproduces them.
+
+The `alias` / `rename` / `group` verbs just read-modify-write `identities.json`
+for you, so merging and renaming are first-class CLI actions — no hand-editing:
+
+```bash
+imsg people                                     # find the handles/ids you need
+imsg alias "Alice" +15551230001 +15551230002    # merge handles → one person
+imsg rename "Bob Example" "Bob"                  # rename a person (or `rename Me Alex`)
+imsg group "My Group" 101 102 103               # name a set of chats
+imsg export --group "My Group" --ids            # use the group
+```
 
 Global: `--db PATH`, `--identities PATH`, `--no-contacts`.
 
@@ -84,7 +100,8 @@ path or a dict. `Chat`, `Handle`, and `Message` are plain dataclasses.
 
 ## identities.json (optional)
 
-Copy `identities.example.json` to `identities.json` and edit. It's git-ignored.
+Build it with the `alias` / `rename` / `group` commands above, or copy
+`identities.example.json` to `identities.json` and edit by hand. It's git-ignored.
 
 ```json
 {
@@ -104,7 +121,13 @@ Copy `identities.example.json` to `identities.json` and edit. It's git-ignored.
 17:06 Cara: [img] look at this
 ```
 
-Day headers keep timestamps cheap; reactions fold onto their target message.
+Day headers keep timestamps cheap; reactions fold onto their target message. With
+`--ids`, every line (events included) is prefixed with its stable id for citing:
+
+```
+#83410 22:13 Alice: wyd  {Loved: Bob}
+#83411 22:14 * Alice named the group "trip"
+```
 
 ## Requirements
 
