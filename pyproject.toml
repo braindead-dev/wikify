@@ -14,6 +14,7 @@ atlas = ["openai>=1.0", "python-dotenv"]   # the wiki pipeline (model seam)
 
 [project.scripts]
 imsg = "imessage.__main__:main"
+atlas = "atlas.__main__:main"
 
 [tool.setuptools]
 packages = ["imessage", "atlas", "atlas.llm"]

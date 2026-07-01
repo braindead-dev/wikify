@@ -93,8 +93,7 @@ class LLMClient:
                 f"{prov['key_env']} not set — add it to .env or the environment.")
         from openai import OpenAI
         self._client = OpenAI(base_url=prov["base_url"], api_key=key,
-                              default_headers={"X-Title": "chat-wiki"})
-        self.name = model
+                              default_headers={"X-Title": "atlas"})
         self.model_id = cfg["model"]
         self.effort = effort if effort is not None else cfg.get("reasoning")
         self.max_retries = max_retries
@@ -130,12 +129,20 @@ class LLMClient:
             response_format = {"type": "json_object"}
 
         started = time.time()
-        meta = {"model": self.model_id, "effort": eff, "schema": schema_name,
-                "started_at": datetime.now().isoformat(timespec="seconds")}
-        last_err = last_finish = last_prov = None
+        state = {"started_at": datetime.now().isoformat(timespec="seconds"),
+                 "attempts": 0, "finish_reason": None, "provider": None, "usage": None}
         last_raw = ""
-        attempt = 0
+        last_err = None
+
+        def emit(status, **outcome):
+            if trace:
+                trace({"model": self.model_id, "effort": eff, "schema": schema_name,
+                       **state, "status": status,
+                       "duration_s": round(time.time() - started, 2), **outcome,
+                       "system": system, "user": user, "response": last_raw})
+
         for attempt in range(self.max_retries):
+            state["attempts"] = attempt + 1
             try:
                 resp = self._client.chat.completions.create(
                     model=self.model_id, messages=messages, max_tokens=max_tokens,
@@ -144,32 +151,28 @@ class LLMClient:
                 self.usage.add(getattr(resp, "usage", None))
                 choice = resp.choices[0]
                 last_raw = choice.message.content or ""
-                last_finish = getattr(choice, "finish_reason", None)
-                last_prov = getattr(resp, "provider", None)
+                state["finish_reason"] = getattr(choice, "finish_reason", None)
+                state["provider"] = getattr(resp, "provider", None)
+                state["usage"] = _usage_dict(getattr(resp, "usage", None))
                 data = _extract_json(last_raw)
-                if trace:
-                    trace({**meta, "status": "ok", "provider": last_prov, "attempts": attempt + 1,
-                           "finish_reason": last_finish, "duration_s": round(time.time() - started, 2),
-                           "usage": _usage_dict(getattr(resp, "usage", None)),
-                           "system": system, "user": user, "response": last_raw})
+                emit("ok")
                 return data
             except Exception as e:                       # transient API or JSON error
                 last_err = e
-                if last_finish == "length":              # truncated — retrying won't help
+                if state["finish_reason"] == "length":   # truncated — retrying won't help
                     break
                 if attempt < self.max_retries - 1:
                     print(f"  [llm] retry {attempt + 1}/{self.max_retries}: "
                           f"{type(e).__name__}: {str(e)[:100]}", file=sys.stderr, flush=True)
                     time.sleep(_retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1)))
 
-        detail = (f"output truncated (finish_reason=length, provider={last_prov}) — raise max_tokens "
-                  "or lower chunk_tokens" if last_finish == "length" else str(last_err))
-        err = LLMError(f"failed after {attempt + 1} tries: {detail}",
-                       finish_reason=last_finish, raw=last_raw, attempts=attempt + 1)
-        if trace:
-            trace({**meta, "status": "error", "provider": last_prov, "attempts": attempt + 1,
-                   "finish_reason": last_finish, "duration_s": round(time.time() - started, 2),
-                   "error": str(err), "system": system, "user": user, "response": last_raw})
+        detail = (f"output truncated (finish_reason=length, provider={state['provider']}) — "
+                  "raise max_tokens or lower chunk_tokens"
+                  if state["finish_reason"] == "length" else str(last_err))
+        err = LLMError(f"failed after {state['attempts']} tries: {detail}",
+                       finish_reason=state["finish_reason"], raw=last_raw,
+                       attempts=state["attempts"])
+        emit("error", error=str(err))
         raise err
 
 

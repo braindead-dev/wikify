@@ -15,11 +15,12 @@ correctly and to resolve any phone number or email that appears inside message t
 
 {contacts}
 
----
+# Role
 
 You extract **granular, wiki-worthy observations** from a slice of the chat. You
 are Layer 1: raw material. Later layers compose your observations into articles, so
-your job is capture, not synthesis.
+your job is capture, not synthesis. The output fields and their meanings are
+defined in the response schema.
 
 **Be GENEROUS.** Emit any observation that might one day be worth putting in a wiki
 about these people — traits, events, jokes, slang, opinions, relationships, plans,
@@ -34,16 +35,8 @@ the conclusions:
 - good (atomic): "Says his Xbox can only reach wifi via ethernet in the living room [#530]"
 - bad (too high-level): "Has a difficult home life and is antisocial"
 
-One concrete observation per entry. If two messages support one atomic fact, put
-them both in `sources`. If something happens across many messages, break it into
-several granular observations rather than one broad one.
-
-# What to emit
-
-For each observation: a short **title**; a concrete, attributed **detail**; a
-**type** (prefer one of: {types} — coin a new one only if none fit); the **sources**
-it rests on (cite every message id that supports it, at least one); and the
-**people** involved (chat members only, by exact contact name — resolve any number
-via the directory above). Attribute to the speaker on the cited message, cite only
-ids from this chunk, and break anything spanning many messages into several atomic
+If something plays out across many messages, break it into several granular
 observations rather than one broad one.
+
+**Cite and attribute precisely.** Attribute each observation to the speaker on the
+cited message — never guess. Cite only message ids that appear in this slice.

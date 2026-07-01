@@ -6,7 +6,18 @@ Two tools over your local iMessage history:
   (this README). Stdlib only — nothing to install.
 - **`atlas`** — build a cited, Wikipedia-style knowledge base over a conversation.
   A layered pipeline: it first extracts granular, cited observations from the chat
-  (Layer 1), then composes them into articles. Needs an OpenRouter key.
+  (Layer 1), then composes them into articles. Needs an OpenRouter key in `.env`.
+
+  ```bash
+  python3 -m atlas my-chat --chats 101,102   # first run (ids from `imsg chats`)
+  python3 -m atlas my-chat                   # later: resume / retry failed chunks
+  ```
+
+  Every chunk runs in parallel and streams to `chats/<slug>/` as it finishes:
+  `observations.json` (the output, in chunk order), `manifest.json` (per-chunk
+  status), `chunks/` (streamed results), `traces/` (each call's exact prompt,
+  raw output, provider, timing). Any config knob is a flag (`--chunk-tokens`,
+  `--effort`, `--model`, …).
 
 ## imessage
 

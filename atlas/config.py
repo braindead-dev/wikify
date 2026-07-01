@@ -14,7 +14,7 @@ class ExtractConfig:
     chunk_tokens: int = 80_000           # target input size per chunk
     overlap_tokens: int = 4_000          # overlap between consecutive chunks
     workers: int = 0                     # parallel extraction calls; 0 = all chunks at once
-    effort: str = "medium"               # reasoning effort for extraction
+    effort: str = "medium"               # reasoning effort: none | low | medium | high
     trace: bool = True                   # save each call's prompt+output to traces/ (failures always saved)
     # Requested output ceiling. Reasoning + answer share this budget, and asking
     # for a large one steers OpenRouter to providers that can deliver it instead of

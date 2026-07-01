@@ -5,10 +5,12 @@ compose into higher-level articles. "Alice mocked Bob's new haircut, calling it 
 bowl cut [#412]", not "Alice is the group's bully". Layer 1 is generous — it emits
 any observation that might be wiki-worthy and lets later layers decide.
 
-The wire shape is enforced with genuine structured outputs (see `observations_schema`):
-`people` is a strict enum of the chat's participants and every observation must
-carry at least one source. `cleaned()` is the second gate — it drops any source id
-that isn't a real message and any observation left without one.
+`FIELDS` is the single source of truth for what each field means. The structured-
+output schema is generated from it (so the model reads the same definitions), and
+the prompt carries only behavioral guidance, never field mechanics. The schema
+enforces the shape at decode time — `people` is a strict enum of the chat's
+participants, every observation needs at least one source — and `cleaned()` is the
+second gate, dropping source ids that aren't real messages.
 """
 from __future__ import annotations
 
@@ -37,20 +39,34 @@ TYPES = [
     "media reference",      # a game/show/song/app the group cares about
 ]
 
+# What each field means — the one place this is written down. Rendered into the
+# structured-output schema, so the model reads these exact definitions.
+FIELDS = {
+    "title": "a short handle for the observation, a few words",
+    "detail": "the observation itself, a sentence or two — concrete, specific, and "
+              "attributed to who said or did it",
+    "type": "the category of observation; prefer one of: " + ", ".join(TYPES) +
+            " — coin a new category only if none of these fit",
+    "sources": "the ids of the messages this observation rests on — cite every id "
+               "that supports it, at least one, more is better",
+    "people": "the chat members involved, by exact contact name",
+}
+
 
 @dataclass
 class Observation:
-    title: str                                    # short handle for the observation
-    detail: str                                   # the observation, in fuller prose
-    type: str                                     # a category (see TYPES; not strict)
-    sources: list = field(default_factory=list)   # message row ids backing it (>=1)
-    people: list = field(default_factory=list)    # participants involved, by contact name
+    """One atomic, cited observation. Field meanings are defined in `FIELDS`."""
+    title: str
+    detail: str
+    type: str
+    sources: list = field(default_factory=list)   # message row ids (>= 1)
+    people: list = field(default_factory=list)    # participant contact names
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Observation":
+    def from_dict(cls, d: dict) -> Observation:
         return cls(
             title=str(d.get("title", "")).strip(),
             detail=str(d.get("detail", "")).strip(),
@@ -72,8 +88,9 @@ class Observation:
 
 
 def observations_schema(participants) -> dict:
-    """The genuine structured-output schema for one extraction call. `people` is a
-    strict enum of the chat's participants; every observation must have >= 1 source."""
+    """The structured-output schema for one extraction call, generated from
+    `FIELDS`. `people` is a strict enum of the chat's participants; every
+    observation must carry at least one source."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -84,25 +101,17 @@ def observations_schema(participants) -> dict:
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["title", "detail", "type", "sources", "people"],
+                    "required": list(FIELDS),
                     "properties": {
-                        "title": {"type": "string",
-                                  "description": "short handle, a few words"},
-                        "detail": {"type": "string",
-                                   "description": "the observation, concrete and attributed"},
-                        "type": {"type": "string",
-                                 "description": "category; prefer one of: " + ", ".join(TYPES)},
-                        "sources": {
-                            "type": "array",
-                            "minItems": 1,
-                            "items": {"type": "integer"},
-                            "description": "message ids backing this — at least one, more is better",
-                        },
-                        "people": {
-                            "type": "array",
-                            "items": {"type": "string", "enum": participants},
-                            "description": "chat members involved, by exact contact name",
-                        },
+                        "title": {"type": "string", "description": FIELDS["title"]},
+                        "detail": {"type": "string", "description": FIELDS["detail"]},
+                        "type": {"type": "string", "description": FIELDS["type"]},
+                        "sources": {"type": "array", "minItems": 1,
+                                    "items": {"type": "integer"},
+                                    "description": FIELDS["sources"]},
+                        "people": {"type": "array",
+                                   "items": {"type": "string", "enum": list(participants)},
+                                   "description": FIELDS["people"]},
                     },
                 },
             },

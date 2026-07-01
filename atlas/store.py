@@ -30,26 +30,35 @@ class RunStore:
     def __init__(self, chat_dir, meta, n_chunks):
         self.dir = Path(chat_dir)
         self.chunks_dir = self.dir / "chunks"
+        self.traces_dir = self.dir / "traces"
         self.manifest_path = self.dir / "manifest.json"
         self.obs_path = self.dir / "observations.json"
         self.meta = meta
         self.n_chunks = n_chunks
+        self.restarted = False               # True when a prior run's config didn't match
         self.manifest = self._load_or_init()
 
     def _config(self):
         return {k: self.meta[k] for k in _CONFIG_KEYS}
 
-    def _load_or_init(self):
-        # resume only if the on-disk run matches this config and chunk count;
-        # otherwise the chunking differs and old chunk files are meaningless.
-        if self.manifest_path.exists():
-            m = json.loads(self.manifest_path.read_text())
-            if m.get("config") == self._config() and len(m.get("chunks", [])) == self.n_chunks:
-                return m
+    def _fresh_manifest(self):
         return {"config": self._config(),
                 "chunks": [{"index": i, "status": "pending", "count": 0,
                             "first_id": None, "last_id": None, "n_messages": None, "error": None}
                            for i in range(self.n_chunks)]}
+
+    def _load_or_init(self):
+        # resume only if the on-disk run matches this config and chunk count;
+        # otherwise the chunking differs and old chunk files are meaningless, so
+        # they are cleared (and the restart surfaced via `self.restarted`).
+        if self.manifest_path.exists():
+            m = json.loads(self.manifest_path.read_text())
+            if m.get("config") == self._config() and len(m.get("chunks", [])) == self.n_chunks:
+                return m
+            self.restarted = True
+            shutil.rmtree(self.chunks_dir, ignore_errors=True)
+            shutil.rmtree(self.traces_dir, ignore_errors=True)
+        return self._fresh_manifest()
 
     def set_spans(self, chunks):
         """Record the row-id span each chunk covers (for status/inspection)."""
@@ -86,9 +95,8 @@ class RunStore:
         """Persist the full request/response of a chunk's call for observability
         (`traces/NNN.json`). Written from the worker thread; the path is unique
         per chunk, so no locking is needed."""
-        traces_dir = self.dir / "traces"
-        traces_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(traces_dir / f"{index:03d}.json", record)
+        self.traces_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.traces_dir / f"{index:03d}.json", record)
 
     def assemble(self):
         """Concatenate all done chunk files, in index order, into observations.json."""
@@ -104,9 +112,10 @@ class RunStore:
 
     def reset(self):
         shutil.rmtree(self.chunks_dir, ignore_errors=True)
+        shutil.rmtree(self.traces_dir, ignore_errors=True)
         self.manifest_path.unlink(missing_ok=True)
         self.obs_path.unlink(missing_ok=True)
-        self.manifest = self._load_or_init()
+        self.manifest = self._fresh_manifest()
 
     def _save(self):
         self.dir.mkdir(parents=True, exist_ok=True)

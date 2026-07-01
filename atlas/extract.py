@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 from pathlib import Path
 
 from imessage import MessagesDB
@@ -17,15 +16,10 @@ from imessage.render import format_message
 
 from .config import ExtractConfig
 from .llm import LLMClient
-from .observation import TYPES, Observation, observations_schema
+from .observation import Observation, observations_schema
 from .store import RunStore
 
-_PROMPTS = Path(__file__).resolve().parent / "prompts"
-
-
-@lru_cache(maxsize=None)
-def _prompt(name):
-    return (_PROMPTS / name).read_text()
+_PROMPT = Path(__file__).resolve().parent / "prompts" / "extract.md"
 
 
 def _toks(s: str) -> int:
@@ -60,18 +54,19 @@ def chunk_messages(messages, chunk_tokens, overlap_tokens) -> list:
     return chunks
 
 
-def contact_directory(db, messages) -> str:
-    """`raw handle -> resolved name` lines for the system prompt (env metadata)."""
-    lines = [f"{h.value} -> {h.name}" for h in db.handles() if h.name and h.name != h.value]
-    return "\n".join(lines) + "\n\nparticipants: " + ", ".join(_participants(messages))
+def system_prompt(db, messages) -> str:
+    """The extraction system prompt: role + behavior, with the contact directory
+    (raw handle -> resolved name, plus the participant roster) substituted in.
+    Identical for every chunk, so it is built once per run."""
+    directory = [f"{h.value} -> {h.name}" for h in db.handles()
+                 if h.name and h.name != h.value]
+    contacts = "\n".join(directory) + "\n\nparticipants: " + ", ".join(_participants(messages))
+    return _PROMPT.read_text().replace("{contacts}", contacts)
 
 
-def extract_chunk(chunk_text, contacts, schema, llm, effort, trace=None, max_tokens=None) -> list:
+def extract_chunk(llm, system, chunk_text, schema, *, effort, max_tokens, trace) -> list:
     """Extract one chunk. Raises on API failure (after retries) so the caller can
     record it; a chunk with genuinely nothing to say returns an empty list."""
-    system = (_prompt("extract.md")
-              .replace("{contacts}", contacts)
-              .replace("{types}", ", ".join(TYPES)))
     user = ("Transcript chunk:\n" + chunk_text +
             "\n\nExtract every wiki-worthy observation from this chunk.")
     out = llm.complete_json(system, user, effort=effort, schema=schema,
@@ -86,13 +81,16 @@ def _bar(done, total, width=26):
 
 
 def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
-                       resume=True, limit_chunks=None, verbose=True):
-    """Layer 1 end to end. Extracts every chunk in parallel and streams each to
-    disk the instant it finishes (`chats/<slug>/chunks/NNN.json`), tracking status
-    in `manifest.json`. Resumable: re-running skips done chunks and retries the
-    rest. Validation only drops sources that aren't real message ids (and the
-    observation if none survive) and non-participant people — never merges or
-    dedups, so Layer 1 stays a faithful capture."""
+                       resume=True, limit_chunks=None, verbose=True) -> list:
+    """Layer 1 end to end; returns the full list of `Observation`s.
+
+    Extracts every chunk in parallel and streams each to disk the instant it
+    finishes (`<chat_dir>/chunks/NNN.json`), tracking per-chunk status in
+    `manifest.json` and assembling `observations.json` in chunk order. Resumable:
+    re-running skips done chunks and retries the rest. Validation only drops
+    sources that aren't real message ids (and the observation if none survive)
+    and non-participant people — never merges or dedups, so Layer 1 stays a
+    faithful capture."""
     config = config or ExtractConfig()
     # respect the user's merges/renames (same auto-detect as the imessage CLI)
     ident = "identities.json" if Path("identities.json").exists() else None
@@ -100,7 +98,7 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     msgs = db.messages(chat_ids)
     valid_ids = {m.rowid for m in msgs}
     participants = _participants(msgs)
-    contacts = contact_directory(db, msgs)
+    system = system_prompt(db, msgs)
     schema = observations_schema(participants)
     chunks = chunk_messages(msgs, config.chunk_tokens, config.overlap_tokens)
 
@@ -120,7 +118,9 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     if verbose:
         print(f"[extract] {len(msgs)} msgs → {total} chunks · {len(participants)} participants "
               f"· {config.model} · x{workers} workers", flush=True)
-        if done:
+        if store.restarted:
+            print("  config changed — prior run discarded, starting fresh", flush=True)
+        elif done:
             print(f"  resuming — {done} chunks already done, {len(todo)} to run", flush=True)
 
     def trace_sink(index):
@@ -134,8 +134,9 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     llm = LLMClient(config.model)
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(extract_chunk, chunks[i]["text"], contacts, schema, llm,
-                               config.effort, trace_sink(i), config.max_tokens or None): i
+        futures = {pool.submit(extract_chunk, llm, system, chunks[i]["text"], schema,
+                               effort=config.effort, max_tokens=config.max_tokens or None,
+                               trace=trace_sink(i)): i
                    for i in todo}
         for fut in as_completed(futures):
             i = futures[fut]
@@ -152,7 +153,7 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     if verbose:
         print(flush=True)
 
-    observations = store.assemble()
+    observations = [Observation.from_dict(o) for o in store.assemble()]
     if verbose:
         failed = store.failed()
         msg = f"[extract] {len(observations)} observations → {store.obs_path}"
