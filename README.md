@@ -1,9 +1,18 @@
 # imessage analysis
 
+Two tools over your local iMessage history:
+
+- **`imessage`** — read and export your chats faithfully, as a **CLI** or **SDK**
+  (this README). Stdlib only — nothing to install.
+- **`wiki`** — build a cited, Wikipedia-style knowledge base over a conversation
+  (people, events, topics, a derived timeline), every claim traced to a message.
+  See [`wiki/README.md`](wiki/README.md) and [`docs/wiki-agent-design.md`](docs/wiki-agent-design.md).
+
+## imessage
+
 Read and export your local iMessage history — as a **CLI** or an importable
 **SDK**. It shows the real entities faithfully (every chat row, every handle)
 and lets you merge them *explicitly* when you want. Nothing is auto-grouped.
-Stdlib only — nothing to install.
 
 ## Quick start
 
