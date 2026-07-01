@@ -1,33 +1,49 @@
-"""Chat Wiki CLI.
+"""Chat Wiki CLI — build a cited, Wikipedia-style wiki over a conversation.
 
-    python3 -m wiki build --match "book club"        # create + ingest (first run)
-    python3 -m wiki build book-club                  # continue ingesting (delta)
-    python3 -m wiki build book-club --chunks 3       # just a few chunks
-    python3 -m wiki list                             # your wikis
+    python3 -m wiki build --match "book club"     # create + build (first run)
+    python3 -m wiki build book-club               # fold in new messages (delta)
+    python3 -m wiki build book-club --limit 5     # just a few windows
+    python3 -m wiki list
     python3 -m wiki status book-club
     python3 -m wiki pages  book-club [--type person]
     python3 -m wiki show   book-club person/alice
-    python3 -m wiki timeline book-club [--limit 40] [--page person/alice]
-    python3 -m wiki verify book-club                 # citation + link integrity
+    python3 -m wiki verify book-club              # citation integrity
+    python3 -m wiki eval   book-club [--sample 25]
 
-A wiki lives at chats/<slug>/. `build` remembers its source chats + title in
-state.json, so every later command only needs the slug.
+A wiki lives at chats/<slug>/ (kb/ pages, limbo/ evidence, state.json). `build`
+remembers its source chats + title, so later commands only need the slug.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
-from .reduce import Runner
-from .store import slugify
+from .store import Store, slugify, verify
 
 CHATS = Path("chats")
 
 
-# ---------------------------------------------------------------- resolution
+def _state(slug):
+    f = CHATS / slug / "state.json"
+    if not f.exists():
+        sys.exit(f"  no wiki {slug!r} — run `build` first (see `wiki list`).")
+    return json.loads(f.read_text())
+
+
+def _store(slug):
+    return Store(CHATS / slug / "kb")
+
+
+def _valid_ids(chat_ids):
+    """The set of citable message ids (for verify/eval), via the source DB."""
+    from imessage import MessagesDB
+    db = MessagesDB()
+    return {m.rowid for m in db.messages(chat_ids)}
+
+
 def _resolve_source(args):
-    """Turn --chats/--group/--match into (chat_ids, title). Needs the source DB."""
     from imessage import MessagesDB
     db = MessagesDB()
     if args.chats:
@@ -37,230 +53,145 @@ def _resolve_source(args):
     elif args.group:
         ids, title = db.group(args.group), args.title or args.group
     elif args.match:
-        needle = args.match.lower()
-        hits = [c for c in db.chats() if needle in c.title.lower()]
+        hits = [c for c in db.chats() if args.match.lower() in c.title.lower()]
         if not hits:
             sys.exit(f"  no chats match {args.match!r}")
         ids, title = [c.rowid for c in hits], args.title or hits[0].title
         print(f"  matched {len(hits)} chat row(s): {ids}  ({title})")
     else:
-        sys.exit("  first build needs --chats, --group, or --match (plus optional --title)")
+        sys.exit("  first build needs --chats, --group, or --match (+ optional --title)")
     return ids, title
-
-
-def _open(slug: str, chunk_size=300) -> Runner:
-    """Load an existing wiki by slug (from its state.json)."""
-    import json
-    state_file = CHATS / slug / "state.json"
-    if not state_file.exists():
-        sys.exit(f"  no wiki {slug!r} — run `build` first (see `wiki list`).")
-    st = json.loads(state_file.read_text())
-    return Runner(CHATS / slug, st["chat_ids"], st["title"],
-                  model=st.get("model", "deepseek-v4-flash"), chunk_size=chunk_size)
 
 
 # ---------------------------------------------------------------- commands
 def cmd_build(args):
+    from .agent import build_wiki
     slug = args.slug
     if slug and (CHATS / slug / "state.json").exists():
-        r = _open(slug, args.size)                       # continue an existing wiki
+        st = _state(slug)
+        ids, title, model = st["chat_ids"], st["title"], st.get("model", args.model)
     else:
         ids, title = _resolve_source(args)
-        slug = slug or slugify(title)
-        r = Runner(CHATS / slug, ids, title, model=args.model, chunk_size=args.size)
-    print(f"  wiki: {slug}  ·  {r.title}  ·  chats {r.chat_ids}")
-    r.ingest(after=_date(args.after), before=_date(args.before), max_chunks=args.chunks,
-             trace=args.trace, consolidate_every=args.consolidate_every)
-    if not args.no_consolidate:
-        print("\n  consolidating into articles…")
-        r.consolidate(min_cites=args.min_cites)
-    r.rebuild_index()
-    probs = r.verify()
-    print(f"\n  integrity: {'clean ✓' if not probs else str(len(probs)) + ' problem(s) — run `verify`'}")
+        slug, model = slug or slugify(title), args.model
+    print(f"  wiki: {slug}  ·  {title}  ·  chats {ids}")
+    build_wiki(CHATS / slug, ids, title, model=model, size=args.size,
+               limit=args.limit, workers=args.workers)
 
 
 def cmd_list(args):
     if not CHATS.exists():
         print("  no wikis yet.")
         return
-    import json
-    rows = []
+    print(f"\n  {'slug':<20}  {'pages':>5}  {'windows':>7}  title")
+    print("  " + "-" * 56)
     for d in sorted(CHATS.iterdir()):
         sf = d / "state.json"
         if sf.exists():
             st = json.loads(sf.read_text())
             pages = len(list((d / "kb").rglob("*.md"))) if (d / "kb").exists() else 0
-            rows.append((d.name, st.get("title", ""), st.get("chunks_done", 0), pages))
-    print(f"\n  {'slug':<22}  {'chunks':>6}  {'pages':>5}  title")
-    print("  " + "-" * 60)
-    for slug, title, chunks, pages in rows:
-        print(f"  {slug:<22}  {chunks:>6}  {pages:>5}  {title}")
+            print(f"  {d.name:<20}  {pages:>5}  {len(st.get('scouted', [])):>7}  {st.get('title', '')}")
     print()
 
 
 def cmd_status(args):
-    r = _open(args.slug)
-    st = r.load_state()
-    pages = list(r.store.all_pages())
+    st = _state(args.slug)
+    store = _store(args.slug)
+    pages = list(store.all_pages())
     by_type = {}
     for p in pages:
         by_type[p.type] = by_type.get(p.type, 0) + 1
     cites = sum(len(p.sources) for p in pages)
-    print(f"\n  {r.title}  ({args.slug})")
-    print(f"    chats:      {r.chat_ids}")
+    print(f"\n  {st.get('title')}  ({args.slug})")
+    print(f"    chats:      {st.get('chat_ids')}")
     print(f"    model:      {st.get('model')}")
-    print(f"    chunks:     {st.get('chunks_done', 0)} done, watermark #{st.get('watermark', 0)}")
+    print(f"    windows:    {len(st.get('scouted', []))} scouted")
     print(f"    pages:      {len(pages)}  (" + ", ".join(f"{n} {t}" for t, n in sorted(by_type.items())) + ")")
     print(f"    citations:  {cites}")
-    fails = st.get("failures", [])
-    if fails:
-        print(f"    failures:   {len(fails)} (last: {fails[-1]['span']})")
     print()
 
 
 def cmd_pages(args):
-    r = _open(args.slug)
-    pages = [p for p in r.store.all_pages() if not args.type or p.type == args.type]
+    pages = [p for p in _store(args.slug).all_pages()
+             if not args.type or p.type == args.type]
     pages.sort(key=lambda p: (p.type, -len(p.sources)))
     print()
     for p in pages:
-        star = "★" if p.pinned else " "
-        print(f"  {star} {p.id:<28} {len(p.sources):>3} cites  {p.title}")
+        print(f"  {p.id:<34} {len(p.sources):>3} cites  {p.title}")
     print()
 
 
 def cmd_show(args):
-    r = _open(args.slug)
-    page = r.store.read(args.page)
+    page = _store(args.slug).read(args.page)
     if page is None:
         sys.exit(f"  no page {args.page!r} (see `wiki pages {args.slug}`)")
     print(page.to_markdown())
 
 
-def cmd_timeline(args):
-    r = _open(args.slug)
-    tl = r.timeline()
-    if args.page:
-        tl = [e for e in tl if e["page"] == args.page or e["page"].startswith(args.page)]
-    if args.limit:
-        tl = tl[-args.limit:]
-    print()
-    for e in tl:
-        print(f"  {e['ts']:%Y-%m-%d %H:%M}  {e['page']:<24} #{e['message_id']}  {e['text'][:70]}")
-    print(f"\n  {len(tl)} entries\n")
-
-
 def cmd_verify(args):
-    r = _open(args.slug)
-    probs = r.verify()
+    st = _state(args.slug)
+    resolves = _valid_ids(st["chat_ids"]).__contains__
+    probs = verify(_store(args.slug), resolves)
     if not probs:
         print("  clean ✓ — every citation resolves, every link exists.")
     else:
         print(f"  {len(probs)} problem(s):")
-        for p in probs[:50]:
+        for p in probs[:60]:
             print(f"    - {p}")
-
-
-def cmd_consolidate(args):
-    r = _open(args.slug)
-    print(f"  consolidating {r.title}…")
-    done = r.consolidate(page_ids=[args.page] if args.page else None, min_cites=args.min_cites)
-    probs = r.verify()
-    print(f"\n  {len(done)} page(s) consolidated · integrity: "
-          f"{'clean ✓' if not probs else str(len(probs)) + ' problem(s)'}")
 
 
 def cmd_eval(args):
     from .eval import grounding, stats
-    r = _open(args.slug)
-    total = len(r._messages())
-    probs = r.verify()
-    s = stats(r.store, total)
-    print(f"\n  {r.title}  ({args.slug})")
+    from .agent import Context
+    st = _state(args.slug)
+    ctx = Context(CHATS / args.slug, st["chat_ids"], st.get("model", "deepseek-v4-flash"))
+    store = _store(args.slug)
+    total = len(ctx.msgs)
+    probs = verify(store, ctx.resolves)
+    s = stats(store, total)
+    print(f"\n  {st.get('title')}  ({args.slug})")
     print(f"    integrity:  {'clean ✓' if not probs else str(len(probs)) + ' problem(s)'}")
     print(f"    pages:      {s['pages']}  (" + ", ".join(f"{n} {t}" for t, n in sorted(s['by_type'].items())) + ")")
     print(f"    claims:     {s['claims']}  ·  {s['citations']} citations")
-    print(f"    coverage:   {s['distinct_messages_cited']}/{total} messages cited ({s['coverage']:.1%})")
+    print(f"    coverage:   {s['distinct_messages_cited']}/{total} messages cited")
+
+    class _Runner:                       # grounding() wants .store and .db
+        pass
+    r = _Runner()
+    r.store, r.db = store, ctx.db
     if args.sample:
-        from .llm import LLMClient
-        judge = LLMClient(args.judge)
-        print(f"\n    grounding (judge {args.judge}, n={args.sample})…")
-        g = grounding(r, judge, n=args.sample)
+        print(f"\n    grounding (judge, n={args.sample})…")
+        g = grounding(r, ctx.llm, n=args.sample)
         print(f"    supported:  {g['supported']}/{g['sampled']}  ({g['rate']:.0%})")
-        for f in g["failures"]:
-            print(f"      ✗ {f['page']}: {f['text'][:60]}  → {f['reason']}")
+        for f in g["failures"][:8]:
+            print(f"      ✗ {f['page']}: {f['text'][:55]} → {f['reason'][:50]}")
     print()
 
 
 # ---------------------------------------------------------------- wiring
-def _date(s):
-    if not s:
-        return None
-    from datetime import datetime
-    for fmt in ("%Y-%m-%d", "%Y-%m"):
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            continue
-    sys.exit(f"  bad date {s!r} — use YYYY-MM-DD or YYYY-MM")
-
-
 def main(argv=None):
     p = argparse.ArgumentParser(prog="wiki", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    b = sub.add_parser("build", help="create or continue a wiki (ingest messages)")
-    b.add_argument("slug", nargs="?", help="wiki slug (omit on first build to derive from title)")
-    b.add_argument("--chats", help="source chat rowids, comma-separated")
-    b.add_argument("--group", help="named group from identities.json")
-    b.add_argument("--match", help="find source chats by title substring")
-    b.add_argument("--title", help="wiki title")
-    b.add_argument("--after", help="only ingest messages after YYYY-MM-DD / YYYY-MM")
-    b.add_argument("--before", help="only ingest messages up to YYYY-MM-DD / YYYY-MM")
-    b.add_argument("--chunks", type=int, help="cap the number of chunks this run")
-    b.add_argument("--size", type=int, default=300, help="messages per chunk (default 300)")
-    b.add_argument("--model", default="deepseek-v4-flash", help="model key (see wiki/llm/config.py)")
-    b.add_argument("--no-consolidate", action="store_true", help="skip the article-writing pass")
-    b.add_argument("--min-cites", type=int, default=6, help="consolidate pages with >= N citations")
-    b.add_argument("--consolidate-every", type=int, default=20,
-                   help="consolidate every N chunks during a long run (keeps pages tidy; 0=off)")
-    b.add_argument("--trace", action="store_true", help="dump per-chunk prompt/edits to chats/<slug>/trace/")
+    b = sub.add_parser("build", help="create or extend a wiki")
+    b.add_argument("slug", nargs="?")
+    b.add_argument("--chats"); b.add_argument("--group"); b.add_argument("--match")
+    b.add_argument("--title")
+    b.add_argument("--size", type=int, default=600, help="messages per window")
+    b.add_argument("--limit", type=int, help="cap windows this run")
+    b.add_argument("--workers", type=int, default=8, help="parallelism")
+    b.add_argument("--model", default="deepseek-v4-flash")
     b.set_defaults(func=cmd_build)
 
-    for name, fn, help_ in [("list", cmd_list, "list your wikis"),
-                            ("status", cmd_status, "show a wiki's state"),
-                            ("pages", cmd_pages, "list pages"),
-                            ("verify", cmd_verify, "check citation + link integrity")]:
-        s = sub.add_parser(name, help=help_)
-        if name != "list":
-            s.add_argument("slug")
-        if name == "pages":
-            s.add_argument("--type", help="filter by page type (person/event/topic)")
-        s.set_defaults(func=fn)
-
-    s = sub.add_parser("show", help="print a page")
-    s.add_argument("slug")
-    s.add_argument("page", help="page id, e.g. person/alice")
+    sub.add_parser("list", help="list your wikis").set_defaults(func=cmd_list)
+    for name, fn in [("status", cmd_status), ("verify", cmd_verify)]:
+        s = sub.add_parser(name); s.add_argument("slug"); s.set_defaults(func=fn)
+    s = sub.add_parser("pages"); s.add_argument("slug")
+    s.add_argument("--type"); s.set_defaults(func=cmd_pages)
+    s = sub.add_parser("show"); s.add_argument("slug"); s.add_argument("page")
     s.set_defaults(func=cmd_show)
-
-    s = sub.add_parser("timeline", help="derived timeline of cited claims")
-    s.add_argument("slug")
-    s.add_argument("--limit", type=int, help="show only the most recent N")
-    s.add_argument("--page", help="filter to a page id or prefix")
-    s.set_defaults(func=cmd_timeline)
-
-    s = sub.add_parser("eval", help="integrity, coverage, and judged grounding")
-    s.add_argument("slug")
-    s.add_argument("--sample", type=int, default=0, help="judge N sampled claims for grounding")
-    s.add_argument("--judge", default="deepseek-v4-flash", help="judge model key")
-    s.set_defaults(func=cmd_eval)
-
-    s = sub.add_parser("consolidate", help="refactor grown pages into clean, organized wholes")
-    s.add_argument("slug")
-    s.add_argument("--page", help="consolidate just one page id")
-    s.add_argument("--min-cites", type=int, default=8, help="only pages with >= N citations")
-    s.set_defaults(func=cmd_consolidate)
+    s = sub.add_parser("eval"); s.add_argument("slug")
+    s.add_argument("--sample", type=int, default=0); s.set_defaults(func=cmd_eval)
 
     args = p.parse_args(argv)
     args.func(args)

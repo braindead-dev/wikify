@@ -1,70 +1,79 @@
 # wiki — a cited knowledge base over a chat
 
-Reads a conversation (via the `imessage` tool) and builds a living, Wikipedia-style
-wiki about it: typed pages for people, events, and topics; a derived timeline; and
-**every claim cited to a specific message**. Continuously updatable — re-running
-folds in new messages. See [`docs/wiki-agent-design.md`](../docs/wiki-agent-design.md)
-for the principles.
+Reads a conversation (via the `imessage` tool) and writes a living, Wikipedia-style
+wiki about it: deep biographies of each person, articles on the group's inside
+jokes and running bits (with their origins and how they evolved), and pages for
+real events — **every claim cited to a specific message**.
+
+It's a **writer agent**, not a mechanical pipeline. See
+[`docs/wiki-agent-design.md`](../docs/wiki-agent-design.md) for the principles.
 
 ## Setup
 
 ```bash
-pip install -e '.[wiki]'          # or: pip install openai python-dotenv
+pip install -e '.[wiki]'          # openai + python-dotenv
 echo 'OPENROUTER_API_KEY=sk-or-...' >> .env
 ```
 
-The default model is DeepSeek V4 Flash via OpenRouter (cheap, 1M context). Swap it
-with `--model` (keys in `wiki/llm/config.py`); a new model is a config entry.
+Default model is DeepSeek V4 Flash via OpenRouter (cheap, 1M context). Swap it with
+`--model` (keys in `wiki/llm/config.py`); a new model is a config entry.
 
 ## Use
 
 ```bash
 # build a wiki from source chats (first run needs a selector + title)
+python3 -m wiki build --match "book club"
 python3 -m wiki build --chats 12,15,18 --title "Book Club"
-python3 -m wiki build --match "book club"        # or find chats by name
-python3 -m wiki build --group "Book Club"        # or an identities.json group
 
 # later: fold in new messages (delta) — same command, just the slug
 python3 -m wiki build book-club
-python3 -m wiki build book-club --chunks 3       # cap this run
+python3 -m wiki build book-club --limit 5     # only a few windows this run
 
 # read it
 python3 -m wiki list
-python3 -m wiki status  book-club
-python3 -m wiki pages   book-club [--type person]
-python3 -m wiki show    book-club person/alice
-python3 -m wiki timeline book-club [--limit 40] [--page person/alice]
+python3 -m wiki status book-club
+python3 -m wiki pages  book-club [--type person]
+python3 -m wiki show   book-club person/alice
 
 # quality
-python3 -m wiki verify  book-club                # citation + link integrity
-python3 -m wiki eval    book-club --sample 25    # + judged grounding
-python3 -m wiki consolidate book-club            # refactor grown pages
+python3 -m wiki verify book-club              # citation + link integrity
+python3 -m wiki eval   book-club --sample 25  # + judged grounding
 ```
 
 Everything about a wiki lives in `chats/<slug>/` (git-ignored — real people):
-`kb/` the pages, `state.json` the resumable ingest watermark, `identities.json`
-per-chat name merges.
+`kb/` the articles, `limbo/` the captured evidence, `identities.json` the resolved
+names, `state.json` the resumable progress.
 
-## How it works (the short version)
+## How it works
 
-`build` folds a **reducer** over day-aligned chunks. For each chunk the model
-proposes typed **edit ops** carrying `[#id]` citations; a deterministic applier
-validates the whole batch (every citation must resolve) and commits atomically —
-so nothing half-lands and no uncited claim is ever written. Pages are markdown;
-the timeline and backlinks are **derived**, never maintained, so they can't drift.
+A **map → reduce over a durable limbo store**, fully parallelized:
 
-Two modes: **incremental** (per chunk, append/update) and **consolidate**
-(periodic refactor of grown pages — reverts if it would drop a citation).
+1. **Scouts** (one per window, in parallel) read the chat and dump *cited evidence*
+   into `limbo/` — people's traits, inside-joke origins, incidents. High-recall
+   capture, no judgment.
+2. A **planner** decides which subjects have *matured* enough (recurred, accumulated
+   material) to deserve an article; the rest stay in limbo until they do.
+3. **Curators** (one per subject, in parallel) synthesize all of a subject's limbo
+   evidence into a deep article — a biography of who someone *is*, or a joke's full
+   arc from origin to evolution. Not a timeline.
+
+Re-running is cheap and non-over-indexing: only new windows are scouted, and on an
+update only subjects with genuinely new evidence are re-written. Identity is
+resolved up front (the literal "Me" and nicknames → real names) via the CLI.
+
+Both agent passes are reliable completions (no tool over-investigation); citations
+are verified on write, so an unresolvable id never lands.
 
 ## Architecture
 
 ```
 wiki/
-  store/    L2  pages, the single write path, derived views     (no LLM)
-  llm/      L4  the model seam — one swappable backend
-  reduce/   L3  the reducer + runner (the fold) + consolidator
-  prompts/      versioned prompts (own your prompts)
-  eval/         mechanical integrity + judged grounding
+  agent/    scouts + planner + curators (the writer agent) — wiki/agent/run.py
+  store/    the page model + derived views (backlinks, timeline, integrity)
+  llm/      the model provider seam — swap models via config
+  prompts/  scout.md, writer.md (own your prompts)
+  eval/     mechanical integrity + judged grounding
 ```
 
-Strict one-way dependencies; `imessage` (L1) is consumed here, never the reverse.
+Strict one-way dependency on `imessage` (L1). Needs Full Disk Access for
+`~/Library/Messages`. Everything runs locally.

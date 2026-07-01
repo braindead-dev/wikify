@@ -5,7 +5,7 @@ resolution and citation checking), so they can never drift from the source.
 """
 from __future__ import annotations
 
-from .page import CITE_RE
+from .page import CITE_RE, cited_ids
 
 
 def backlinks(store) -> dict:
@@ -45,7 +45,7 @@ def timeline(store, resolve_ts) -> list:
     entries = []
     for page in store.all_pages():
         for line in page.body.split("\n"):
-            cites = [int(m.group(1)) for m in CITE_RE.finditer(line)]
+            cites = cited_ids(line)
             if not cites:
                 continue
             claim = CITE_RE.sub("", line).strip(" -*\t").strip()

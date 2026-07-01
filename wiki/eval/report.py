@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 import re
 
-from ..store.page import CITE_RE
+from ..store.page import CITE_RE, cited_ids
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 
@@ -41,7 +41,7 @@ def claims(store) -> list:
                 continue
             para = line.lstrip("-*").strip()
             for sent in _SENTENCE.split(para):
-                cites = [int(m.group(1)) for m in CITE_RE.finditer(sent)]
+                cites = cited_ids(sent)
                 if cites:
                     text = CITE_RE.sub("", sent).strip(" -*\t").strip()
                     out.append({"page": page.id, "text": text, "cites": cites})

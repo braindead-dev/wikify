@@ -87,6 +87,30 @@ class LLMClient:
         self.max_retries = max_retries
         self.usage = Usage()
 
+    def chat(self, messages, tools=None, effort=None):
+        """One tool-calling turn. Returns the assistant message (which may carry
+        .tool_calls). Retries transient errors with backoff."""
+        extra = {}
+        eff = effort if effort is not None else self.effort
+        if eff:
+            extra["reasoning"] = {"effort": eff}
+        last_err = None
+        for attempt in range(self.max_retries):
+            try:
+                resp = self._client.chat.completions.create(
+                    model=self.model_id, messages=messages,
+                    tools=tools or None, tool_choice="auto" if tools else None,
+                    extra_body=extra or None,
+                )
+                self.usage.add(getattr(resp, "usage", None))
+                return resp.choices[0].message
+            except Exception as e:
+                last_err = e
+                delay = _retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1))
+                if attempt < self.max_retries - 1:
+                    time.sleep(delay)
+        raise RuntimeError(f"chat call failed after {self.max_retries} tries: {last_err}")
+
     def complete_json(self, system: str, user: str, effort=None):
         """Return parsed JSON from the model. Retries transient errors and
         malformed JSON with backoff; raises after `max_retries`."""

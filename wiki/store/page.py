@@ -10,8 +10,23 @@ import re
 from dataclasses import dataclass, field
 
 FENCE = "---"
-CITE_RE = re.compile(r"\[#(\d+)\]")           # [#1024]
+# a citation bracket holds one or more ids: [#1024] or [#1024, #1031] or [#1024, 1031]
+CITE_RE = re.compile(r"\[#\s*\d+(?:\s*,\s*#?\s*\d+)*\s*\]")
+_ID_RE = re.compile(r"\d+")
 LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")     # [[event/road-trip]]
+
+
+def cited_ids(text: str) -> list:
+    """Every message id cited in the text, in first-appearance order (deduped).
+    Handles both [#123] and [#123, #456] brackets."""
+    seen, out = set(), []
+    for bracket in CITE_RE.finditer(text):
+        for m in _ID_RE.finditer(bracket.group(0)):
+            mid = int(m.group(0))
+            if mid not in seen:
+                seen.add(mid)
+                out.append(mid)
+    return out
 
 
 @dataclass
@@ -28,13 +43,7 @@ class Page:
     @property
     def sources(self) -> list:
         """Every message id this page cites, in first-appearance order."""
-        seen, out = set(), []
-        for m in CITE_RE.finditer(self.body):
-            mid = int(m.group(1))
-            if mid not in seen:
-                seen.add(mid)
-                out.append(mid)
-        return out
+        return cited_ids(self.body)
 
     @property
     def links(self) -> list:

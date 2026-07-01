@@ -13,3 +13,6 @@ __pycache__/
 .env
 # per-chat wiki data (real people — stays local)
 chats/
+
+# dev/test harnesses (hardcode a real chat)
+scripts/

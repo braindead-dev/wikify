@@ -17,7 +17,7 @@ imsg = "imessage.__main__:main"
 wiki = "wiki.__main__:main"
 
 [tool.setuptools]
-packages = ["imessage", "wiki", "wiki.store", "wiki.llm", "wiki.reduce", "wiki.eval"]
+packages = ["imessage", "wiki", "wiki.store", "wiki.llm", "wiki.agent", "wiki.eval"]
 
 [tool.setuptools.package-data]
 wiki = ["prompts/*.md"]

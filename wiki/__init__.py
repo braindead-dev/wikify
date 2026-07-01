@@ -1,11 +1,14 @@
-"""Chat Wiki — a cited, continuously-updated knowledge base over a conversation.
+"""Chat Wiki — a cited, Wikipedia-style knowledge base over a conversation.
 
-Layers (strict one-way dependency, top depends on bottom):
+A writer agent, not a pipeline of edits. Two roles run as a map->reduce over a
+durable limbo store, parallelized and re-runnable:
 
-    reduce/   L3  the reduce(store, chunk) workflow
-    llm/      L4  the model provider seam
-    store/    L2  the KB store: pages, indexes, the single write path
+    agent/    scouts capture cited evidence -> limbo/;  a planner promotes what has
+              matured;  curators synthesize deep articles -> kb/
+    store/    the page model + derived views (backlinks, timeline, integrity)
+    llm/      the model provider seam (swap models via config)
+    eval/     mechanical citation integrity + judged grounding
 
-The `imessage` package is L1 (data access) and is consumed here, never the
-reverse. See docs/wiki-agent-design.md for the principles this all follows.
+The `imessage` package (L1 data access) is consumed here, never the reverse.
+See docs/wiki-agent-design.md and wiki/prompts/{scout,writer}.md.
 """
