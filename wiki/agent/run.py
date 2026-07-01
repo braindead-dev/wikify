@@ -45,6 +45,7 @@ class Context:
             ident.write_text("{}\n")
         self.ident = str(ident)
         self.chat_ids = list(chat_ids)
+        self.title = self.dir.name
         self.llm = LLMClient(model)
         self._lock = threading.Lock()
         self.reload()
@@ -115,11 +116,22 @@ def resolve_identities(ctx, verbose=True):
         'Return JSON: {"renames": [["chat label", "Real Name"]]}.\n\n' + sample[:60000])
     out = ctx.llm.complete_json(system, user)
     renames = out.get("renames", []) if isinstance(out, dict) else []
-    applied = []
+    # keep only clean 1:1 mappings: never rename the owner label "Me" (too error
+    # prone, and merging it into a real person is catastrophic), and never map two
+    # different labels to the same name (that merges distinct people).
+    from collections import Counter
+    clean = []
     for pair in renames:
-        if isinstance(pair, list) and len(pair) == 2 and str(pair[0]).strip() != str(pair[1]).strip():
-            ctx.imsg(["rename", str(pair[0]).strip(), str(pair[1]).strip()])
-            applied.append((pair[0], pair[1]))
+        if isinstance(pair, list) and len(pair) == 2:
+            old, new = str(pair[0]).strip(), str(pair[1]).strip()
+            if old and new and old.lower() != "me" and old.lower() != new.lower():
+                clean.append((old, new))
+    dupes = {n for n, c in Counter(n for _, n in clean).items() if c > 1}
+    applied = []
+    for old, new in clean:
+        if new not in dupes:
+            ctx.imsg(["rename", old, new])
+            applied.append((old, new))
     if applied:
         ctx.reload()
         if verbose:
@@ -144,7 +156,7 @@ def scout(ctx, label, msgs, verbose=True):
     user = (f"Slice: {label}.\n\nTranscript:\n{transcript}\n\n"
             'Return JSON: {"notes": "<all your markdown notes for this slice>"}')
     try:
-        out = ctx.llm.complete_json(_prompt("scout.md"), user)
+        out = ctx.llm.complete_json(_prompt("scout.md"), user, effort="medium")
         notes = out.get("notes", "") if isinstance(out, dict) else ""
     except Exception as e:
         print(f"  scout {label}: FAILED — {str(e)[:80]}", flush=True)
@@ -157,24 +169,38 @@ def scout(ctx, label, msgs, verbose=True):
     return notes
 
 
+_TOPIC_KEYS = ("joke", "slang", "bit", "incident", "event", "dynamic", "running",
+               "meme", "lore", "saga", "nickname", "tension", "obsession")
+
+
 def plan(ctx, verbose=True):
-    limbo = ctx.dir / "limbo"
-    notes = "\n\n".join(f"# {f.name}\n{f.read_text()}" for f in sorted(limbo.glob("*.md"))) \
-        if limbo.exists() else ""
     people = sorted({m.sender for m in ctx.msgs if not m.system})
-    system = ("You plan a wiki from captured limbo notes. Output JSON only.")
+    # The per-person notes are for the curators; the planner only needs the
+    # topic/event/dynamic material — gathered from EVERY window, compactly.
+    material = []
+    for f in sorted((ctx.dir / "limbo").glob("*.md")):
+        for sec in re.split(r"(?m)^(?=## )", f.read_text()):
+            head = sec.split("\n", 1)[0].lower()
+            if head.startswith("##") and any(k in head for k in _TOPIC_KEYS):
+                material.append(sec.strip())
+    notes = "\n".join(material)[:400000]
+    system = "You plan a wiki from captured field notes about a group chat. JSON only."
     user = (
-        "Below are limbo notes (cited observations) captured from a group chat. "
-        "Decide which subjects deserve a full article now. Always include every "
-        "PERSON in this roster: " + ", ".join(people) + ". Also include TOPICS "
-        "(inside jokes, running bits, shared obsessions, group dynamics) and EVENTS "
-        "(specific incidents) that have RECURRED or accumulated enough material to "
-        "be worth an article — leave immature threads in limbo.\n\n"
+        "These are notes on the group's inside jokes, running bits, incidents, and "
+        "dynamics, captured across the whole chat history. Decide which deserve their "
+        "own article. Always include every PERSON in the roster: " + ", ".join(people) +
+        ". Then be GENEROUS with TOPICS (each distinct inside joke, running bit, "
+        "recurring obsession, or group dynamic that shows up more than once) and "
+        "EVENTS (each specific incident, trip, fight, or milestone worth remembering). "
+        "A rich 18-month friendship should yield dozens of topics and events, not a "
+        "handful. Only skip a thread that appears once and never returns. Merge "
+        "obvious duplicates.\n\n"
         'Return JSON: {"subjects": [{"type": "person|topic|event", "id": '
         '"type/slug", "title": "Readable Title"}]}\n\n'
-        f"LIMBO NOTES:\n{notes[:120000]}")
+        f"NOTES:\n{notes}")
     out = ctx.llm.complete_json(system, user)
-    subjects = out.get("subjects", []) if isinstance(out, dict) else []
+    subjects = [s for s in (out.get("subjects", []) if isinstance(out, dict) else [])
+                if isinstance(s, dict) and s.get("id") and s.get("type")]
     if verbose:
         kinds = {}
         for s in subjects:
@@ -188,23 +214,38 @@ _STOP = {"the", "and", "for", "with", "person", "topic", "event", "his", "her",
 
 
 def _keywords(subject):
-    return {w for w in re.findall(r"[a-z]{3,}", (subject["title"] + " " + subject["id"]).lower())
-            if w not in _STOP}
+    kws = {w for w in re.findall(r"[a-z]{3,}", (subject["title"] + " " + subject["id"]).lower())
+           if w not in _STOP}
+    kws.add(subject["title"].lower().strip())   # always include the title (handles short names like "Me")
+    return kws
+
+
+def _patterns(subject):
+    # match keywords on WORD boundaries — otherwise a short two/three-letter name
+    # matches "some"/"general" and drowns the curator in noise (→ 0 valid cites).
+    return [re.compile(rf"\b{re.escape(w)}\b") for w in _keywords(subject)]
 
 
 def _mentioned(subject, text):
-    return any(w in text for w in _keywords(subject))
+    return any(p.search(text) for p in _patterns(subject))
+
+
+_COMMON = {"me", "i", "an", "he", "she", "it", "we", "us", "him"}
 
 
 def _gather(ctx, subject):
     """All limbo sections relevant to this subject (their own section plus any
     joke/event/dynamic that mentions them). Keeps each curator focused and bounded
-    even when the full limbo is huge."""
-    words = _keywords(subject)
+    even when the full limbo is huge. Ultra-common keywords like the pronoun "me"
+    only match a section's header (its own section), never body text."""
+    kws = _keywords(subject)
+    head_pats = [re.compile(rf"\b{re.escape(w)}\b") for w in kws]
+    body_pats = [re.compile(rf"\b{re.escape(w)}\b") for w in kws - _COMMON]
     out = []
     for f in sorted((ctx.dir / "limbo").glob("*.md")):
         for sec in re.split(r"(?m)^(?=## )", f.read_text()):
-            if any(w in sec.lower() for w in words):
+            head, low = sec.split("\n", 1)[0].lower(), sec.lower()
+            if any(p.search(head) for p in head_pats) or any(p.search(low) for p in body_pats):
                 out.append(sec.strip())
     return ("\n\n".join(out))[:150000] or "(no notes)"
 
@@ -274,6 +315,7 @@ def rebuild_index(ctx):
 def build_wiki(chat_dir, chat_ids, title, model="deepseek-v4-flash",
                size=600, limit=None, workers=8, verbose=True):
     ctx = Context(chat_dir, chat_ids, model)
+    ctx.title = title
     st = _state(ctx)
     st["chat_ids"], st["title"], st["model"] = ctx.chat_ids, title, model
     _save_state(ctx, st)
