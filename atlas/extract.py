@@ -7,6 +7,7 @@ then streamed to disk chunk by chunk via `RunStore` — resumable and order-pres
 """
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
@@ -131,6 +132,7 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         return sink
 
     llm = LLMClient(config.model)
+    t0 = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(extract_chunk, chunks[i]["text"], contacts, schema,
                                llm, config.effort, trace_sink(i)): i for i in todo}
@@ -155,5 +157,5 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         msg = f"[extract] {len(observations)} observations → {store.obs_path}"
         if failed:
             msg += f" · {len(failed)} chunks failed, rerun to retry: {failed}"
-        print(msg + f" · {llm.usage}", flush=True)
+        print(msg + f" · {llm.usage} · {time.time() - t0:.0f}s", flush=True)
     return observations

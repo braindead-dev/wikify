@@ -12,6 +12,7 @@ import random
 import re
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .config import DEFAULT_MODEL, MODELS, PROVIDERS
@@ -128,8 +129,9 @@ class LLMClient:
         else:
             response_format = {"type": "json_object"}
 
-        record = {"model": self.model_id, "effort": eff, "schema": schema_name,
-                  "system": system, "user": user}
+        started = time.time()
+        meta = {"model": self.model_id, "effort": eff, "schema": schema_name,
+                "started_at": datetime.now().isoformat(timespec="seconds")}
         last_err = last_finish = None
         last_raw = ""
         attempt = 0
@@ -145,8 +147,10 @@ class LLMClient:
                 last_finish = getattr(choice, "finish_reason", None)
                 data = _extract_json(last_raw)
                 if trace:
-                    trace({**record, "status": "ok", "attempts": attempt + 1,
-                           "finish_reason": last_finish, "response": last_raw})
+                    trace({**meta, "status": "ok", "attempts": attempt + 1,
+                           "finish_reason": last_finish, "duration_s": round(time.time() - started, 2),
+                           "usage": _usage_dict(getattr(resp, "usage", None)),
+                           "system": system, "user": user, "response": last_raw})
                 return data
             except Exception as e:                       # transient API or JSON error
                 last_err = e
@@ -162,9 +166,17 @@ class LLMClient:
         err = LLMError(f"failed after {attempt + 1} tries: {detail}",
                        finish_reason=last_finish, raw=last_raw, attempts=attempt + 1)
         if trace:
-            trace({**record, "status": "error", "attempts": attempt + 1,
-                   "finish_reason": last_finish, "response": last_raw, "error": str(err)})
+            trace({**meta, "status": "error", "attempts": attempt + 1,
+                   "finish_reason": last_finish, "duration_s": round(time.time() - started, 2),
+                   "error": str(err), "system": system, "user": user, "response": last_raw})
         raise err
+
+
+def _usage_dict(u):
+    if not u:
+        return None
+    return {"input": getattr(u, "prompt_tokens", 0) or 0,
+            "output": getattr(u, "completion_tokens", 0) or 0}
 
 
 def _retry_after(err):
