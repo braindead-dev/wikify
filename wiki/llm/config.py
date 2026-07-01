@@ -1,0 +1,24 @@
+"""Model registry (P5) — the only place a model or provider is named.
+
+Swapping models is a config edit, never a code change. A new model is a new entry
+here; everything above L4 refers to models by their friendly key and never learns
+the provider, base URL, or wire details.
+"""
+from __future__ import annotations
+
+PROVIDERS = {
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_env": "OPENROUTER_API_KEY",
+    },
+}
+
+MODELS = {
+    # key                   provider       wire model id                    default effort
+    "deepseek-v4-flash": {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash", "reasoning": "high"},
+    "deepseek-v4":       {"provider": "openrouter", "model": "deepseek/deepseek-v4",        "reasoning": "high"},
+    "gpt-5":             {"provider": "openrouter", "model": "openai/gpt-5",                "reasoning": "medium"},
+    "claude-sonnet":     {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6", "reasoning": None},
+}
+
+DEFAULT_MODEL = "deepseek-v4-flash"

@@ -9,3 +9,7 @@ __pycache__/
 *.pyc
 *.egg-info/
 .DS_Store
+
+.env
+# per-chat wiki data (real people — stays local)
+chats/
