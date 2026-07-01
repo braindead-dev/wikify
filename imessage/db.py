@@ -223,13 +223,14 @@ class MessagesDB:
             f"WHERE cmj.chat_id IN ({placeholders})", chat_ids).fetchone()
         return row[0] or 0
 
-    def messages(self, chat_ids, since=None, after_id=None) -> list[Message]:
+    def messages(self, chat_ids, since=None, until=None, after_id=None) -> list[Message]:
         """Messages across the given chat rows, in time order.
 
         Pass one id for a single chat, or several to merge them (e.g. a group
         that was re-created under a new id, or iMessage + SMS copies).
-        `since` (a datetime) filters by time; `after_id` (a ROWID) filters
-        exactly — everything strictly newer than that message.
+        `since`/`until` (datetimes) bound the time window — `since` is exclusive
+        (strictly after), `until` is inclusive (up to and including). `after_id`
+        (a ROWID) filters exactly: everything strictly newer than that message.
         """
         chat_ids = [chat_ids] if isinstance(chat_ids, int) else list(chat_ids)
         cur = self._con.cursor()
@@ -239,6 +240,9 @@ class MessagesDB:
         if since is not None:
             where += " AND m.date > ?"
             params.append(int((since.timestamp() - APPLE_EPOCH) * 1e9))
+        if until is not None:
+            where += " AND m.date <= ?"
+            params.append(int((until.timestamp() - APPLE_EPOCH) * 1e9))
         if after_id is not None:
             where += " AND m.ROWID > ?"
             params.append(after_id)
@@ -336,16 +340,20 @@ class MessagesDB:
             raise KeyError(f"message {rowid} is not a standalone message (reaction/empty)")
         return msgs[max(0, idx - context): idx + context + 1]
 
-    def export(self, chat_ids, fmt="txt", title=None, ids=False, header=False):
+    def export(self, chat_ids, fmt="txt", title=None, ids=False, header=False,
+               since=None, until=None):
         """Render the given chats as a transcript string (txt) or dict (json)."""
-        return self.render(chat_ids, fmt, title, ids=ids, header=header)[0]
+        return self.render(chat_ids, fmt, title, ids=ids, header=header,
+                           since=since, until=until)[0]
 
-    def render(self, chat_ids, fmt="txt", title=None, ids=False, header=False):
+    def render(self, chat_ids, fmt="txt", title=None, ids=False, header=False,
+               since=None, until=None):
         """Like export(), but also returns (payload, meta, title) for callers
-        that need the metadata without re-parsing the output."""
+        that need the metadata without re-parsing the output. `since`/`until`
+        bound the message window (for chunked ingestion)."""
         from . import render as renderer
         chat_ids = [chat_ids] if isinstance(chat_ids, int) else list(chat_ids)
-        msgs = self.messages(chat_ids)
+        msgs = self.messages(chat_ids, since=since, until=until)
         by_id = {c.rowid: c for c in self.chats()}
         if title is None:
             names = [by_id[c].title for c in chat_ids if c in by_id]

@@ -14,6 +14,7 @@ import json
 import re
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from .db import MessagesDB
@@ -37,6 +38,18 @@ def _slug(text: str) -> str:
 
 def _date(d) -> str:
     return d.strftime("%Y-%m-%d") if d else "?"
+
+
+def _parse_date(s):
+    """Parse YYYY-MM-DD or YYYY-MM into a datetime, or None."""
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    sys.exit(f"  bad date {s!r} — use YYYY-MM-DD or YYYY-MM")
 
 
 def _state() -> dict:
@@ -69,14 +82,22 @@ def _print_chats(chats):
     print()
 
 
-def _export(db, chat_ids, fmt, out=None, title=None, ids=False, header=False):
+def _export(db, chat_ids, fmt, out=None, title=None, ids=False, header=False,
+            since=None, until=None):
     """Render to disk, record an exact watermark, and report the diff vs last write."""
     chat_ids = [chat_ids] if isinstance(chat_ids, int) else list(chat_ids)
-    payload, meta, title = db.render(chat_ids, fmt, title, ids=ids, header=header)
+    payload, meta, title = db.render(chat_ids, fmt, title, ids=ids, header=header,
+                                     since=since, until=until)
     text = json.dumps(payload, indent=2, ensure_ascii=False) if fmt == "json" else payload
     out = Path(out) if out else Path("data") / f"{_slug(title)}.{fmt}"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
+
+    if since is not None or until is not None:      # a one-off slice; not a tracked export
+        size = f"{out.stat().st_size / 1024 / 1024:.1f} MB"
+        print(f"\n  ✓ {title}  ({meta['message_count']} messages in window)")
+        print(f"  → {out}  ({size})\n")
+        return
 
     state = _state()
     prev = state.get(str(out), {})
@@ -128,6 +149,8 @@ def cmd_chats(db, args):
 
 def cmd_people(db, args):
     people = db.handles()
+    if args.unresolved:                             # only handles not mapped to a named person
+        people = [h for h in people if h.name == h.value]
     if not args.all:
         people = people[:args.limit]
     if args.json:
@@ -149,7 +172,8 @@ def cmd_export(db, args):
         chat_ids, title = args.chats, args.title
     else:
         sys.exit("  give chat ids (e.g. `export 512 638`) or --group NAME")
-    _export(db, chat_ids, args.format, args.out, title, ids=args.ids, header=args.header)
+    _export(db, chat_ids, args.format, args.out, title, ids=args.ids, header=args.header,
+            since=_parse_date(args.after), until=_parse_date(args.before))
 
 
 def cmd_show(db, args):
@@ -261,6 +285,7 @@ def main(argv=None):
     p = sub.add_parser("people", help="list handles (faithful, no merging)")
     p.add_argument("--limit", type=int, default=40)
     p.add_argument("--all", action="store_true")
+    p.add_argument("--unresolved", action="store_true", help="only handles not mapped to a named person")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_people)
 
@@ -272,6 +297,8 @@ def main(argv=None):
     p.add_argument("--title", help="override the conversation title")
     p.add_argument("--ids", action="store_true", help="tag each line with its #rowid for citing")
     p.add_argument("--header", action="store_true", help="prepend a self-describing format/meta header")
+    p.add_argument("--after", help="only messages after this date (YYYY-MM-DD or YYYY-MM)")
+    p.add_argument("--before", help="only messages up to this date (YYYY-MM-DD or YYYY-MM)")
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("show", help="resolve a #rowid citation back to the message")
