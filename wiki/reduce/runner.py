@@ -80,10 +80,12 @@ class Runner:
                 self.store.write(Page(id=pid, type="person", title=sender, pinned=True))
 
     # -- the fold ------------------------------------------------------------
-    def ingest(self, after=None, before=None, max_chunks=None, verbose=True):
+    def ingest(self, after=None, before=None, max_chunks=None, verbose=True, trace=False,
+               consolidate_every=0):
         self._messages()
         self.seed()
-        reducer = Reducer(self.store, LLMClient(self.model), self.title, self.resolves)
+        trace_dir = (self.dir / "trace") if trace else None
+        reducer = Reducer(self.store, LLMClient(self.model), self.title, self.resolves, trace_dir)
         st = self.load_state()
         window = self.db.messages(self.chat_ids, since=after, until=before)
         pending = [m for m in window if m.rowid > st["watermark"]]
@@ -116,6 +118,11 @@ class Runner:
             results.append(cs)
             if verbose:
                 print(f"  chunk {i}/{len(chunks)} [{span}]: {cs.summary()}  ·  {reducer.llm.usage}")
+            if consolidate_every and st["chunks_done"] % consolidate_every == 0:
+                if verbose:
+                    print("    ↻ periodic consolidation (keeping pages tidy)…")
+                self.consolidate(min_cites=6, verbose=False)
+                self.rebuild_index()
         return results
 
     # -- consolidation (mode 2) ---------------------------------------------
@@ -146,6 +153,23 @@ class Runner:
                 if verbose:
                     print(f"  {pid}: consolidated  ·  {con.llm.usage}")
         return done
+
+    # -- index hub (deterministic, no LLM) ----------------------------------
+    def rebuild_index(self):
+        pages = list(self.store.all_pages())
+        groups = [("People", "person"), ("Topics", "topic"), ("Events", "event")]
+        counts = {t: sum(1 for p in pages if p.type == t) for _, t in groups}
+        lines = [f"Wiki for **{self.title}** — "
+                 + ", ".join(f"{counts[t]} {label.lower()}" for label, t in groups) + "."]
+        for label, type_ in groups:
+            items = sorted((p for p in pages if p.type == type_), key=lambda p: p.title.lower())
+            if items:
+                lines.append(f"\n## {label}")
+                lines += [f"- [[{p.id}]] — {p.title}" for p in items]
+        idx = self.store.read("index") or Page(id="index", type="index", title=self.title, pinned=True)
+        idx.body = "\n".join(lines)
+        idx.updated = _today()
+        self.store.write(idx)
 
     # -- derived views -------------------------------------------------------
     def timeline(self):

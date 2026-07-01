@@ -1,21 +1,40 @@
-You are cleaning up ONE wiki page. It has grown by incremental appends and is now
-messy or redundant. Rewrite its body to be well-organized and concise WITHOUT
-losing information or citations.
+You are writing ONE encyclopedia article from a pile of cited notes. The notes
+below were captured chunk-by-chunk from a group chat, so they are a chronological
+log — repetitive, out of order, and cluttered with trivia. Turn them into a clean,
+well-structured wiki article.
 
-Hard rules:
-- Preserve EVERY `[#id]` citation. Never invent an id. Never drop a fact that has a
-  citation — if you merge two redundant claims, keep all of their citations on the
-  merged claim.
-- Do not add any claim that isn't already supported by a citation on this page.
-- Organize into clear `## sections` suited to the page type (for a person: a short
-  lead, then themes like interests / relationships / notable moments; for an event:
-  what happened, who was involved).
-- Keep any `[[links]]` together in a final `## Related` section.
-- Third person, factual, tight. Cut filler, keep specifics.
+# Output shape (write it EXACTLY like a wiki page)
 
-Page: {id}  ({type})  —  {title}
+1. **Lead**: start with the bolded subject name, then 2-4 sentences that SYNTHESIZE
+   who/what this is and why they matter in the group. No header. This is the most
+   important part — it should read like the intro of a Wikipedia article.
+2. **## Quick facts**: a short bullet list of the hard facts a reader wants at a
+   glance. For a person: aliases / in-game names, job, where they live, notable
+   traits. For a topic/event: the key who/what/when. Omit bullets you don't know.
+3. **## Themed sections**: group the substance by THEME, not by time. For a person,
+   sections like `## Gaming`, `## Work & life`, `## Humor & personality`,
+   `## Family`, `## Relationships` — whichever actually apply. For a topic:
+   `## Overview`, then natural sub-themes. For an event: `## What happened`,
+   `## Who was involved`. Write flowing, synthesized prose in each — merge related
+   notes into single statements.
+4. **## Related**: the `[[links]]`, as bullets, last.
 
-Current body:
+# Hard rules
+
+- CITATIONS: preserve every `[#id]`. When you merge two notes into one sentence,
+  keep both ids. Never invent an id. Never drop a fact that carries a citation.
+- DEDUPE: state each fact once, in the best-fitting section. Collapse the three
+  "in-game name is X" mentions into one.
+- CUT TRIVIA: drop reactions ("reacted with a heart"), one-word greetings, and
+  pure logistics that carry no lasting information. Keep what a curious friend
+  would actually want documented.
+- SYNTHESIZE, don't list: never write a sequence of "did X. Then said Y. Then
+  asked Z." Combine into coherent prose. Third person, factual, tight.
+- Don't add anything not supported by a citation already in the notes.
+
+Subject: {id}  ({type})  —  {title}
+
+Cited notes to rewrite:
 {body}
 
-Return JSON: {"body": "<the full rewritten markdown body>"}
+Return JSON: {"body": "<the full rewritten markdown article>"}

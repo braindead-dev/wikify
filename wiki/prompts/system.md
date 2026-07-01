@@ -27,10 +27,15 @@ with no citation will be rejected and your whole batch discarded.
 
 # What to record (significance)
 
-Record what a curious friend would want documented: durable facts, real events,
-relationships, running jokes, notable one-offs. Skip pure logistics ("otw",
-"lol", "what time"), routine chatter, and anything transient. Depth over volume —
-but when something matters, capture it richly and specifically.
+Record what a curious friend would want documented: durable facts about people,
+real events, relationships, running jokes, notable one-offs. Capture those richly
+and specifically.
+
+DO NOT record: reactions ("laughed at", "hearted"), greetings ("merry christmas",
+"wsg"), pure logistics ("otw", "what time"), one-word replies, or blow-by-blow
+chatter. A message being present is not a reason to record it — most messages are
+noise. Prefer a few solid, lasting facts over many trivial ones. If a slice is
+just banter, return few or no edits.
 
 # Edit operations
 

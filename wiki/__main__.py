@@ -69,7 +69,12 @@ def cmd_build(args):
         slug = slug or slugify(title)
         r = Runner(CHATS / slug, ids, title, model=args.model, chunk_size=args.size)
     print(f"  wiki: {slug}  ·  {r.title}  ·  chats {r.chat_ids}")
-    r.ingest(after=_date(args.after), before=_date(args.before), max_chunks=args.chunks)
+    r.ingest(after=_date(args.after), before=_date(args.before), max_chunks=args.chunks,
+             trace=args.trace, consolidate_every=args.consolidate_every)
+    if not args.no_consolidate:
+        print("\n  consolidating into articles…")
+        r.consolidate(min_cites=args.min_cites)
+    r.rebuild_index()
     probs = r.verify()
     print(f"\n  integrity: {'clean ✓' if not probs else str(len(probs)) + ' problem(s) — run `verify`'}")
 
@@ -216,6 +221,11 @@ def main(argv=None):
     b.add_argument("--chunks", type=int, help="cap the number of chunks this run")
     b.add_argument("--size", type=int, default=300, help="messages per chunk (default 300)")
     b.add_argument("--model", default="deepseek-v4-flash", help="model key (see wiki/llm/config.py)")
+    b.add_argument("--no-consolidate", action="store_true", help="skip the article-writing pass")
+    b.add_argument("--min-cites", type=int, default=6, help="consolidate pages with >= N citations")
+    b.add_argument("--consolidate-every", type=int, default=20,
+                   help="consolidate every N chunks during a long run (keeps pages tidy; 0=off)")
+    b.add_argument("--trace", action="store_true", help="dump per-chunk prompt/edits to chats/<slug>/trace/")
     b.set_defaults(func=cmd_build)
 
     for name, fn, help_ in [("list", cmd_list, "list your wikis"),
