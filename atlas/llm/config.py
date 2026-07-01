@@ -1,8 +1,8 @@
-"""Model registry (P5) — the only place a model or provider is named.
+"""Model registry — the only place a model or provider is named.
 
 Swapping models is a config edit, never a code change. A new model is a new entry
-here; everything above L4 refers to models by their friendly key and never learns
-the provider, base URL, or wire details.
+here; callers refer to models by their friendly key and never learn the provider,
+base URL, or wire details.
 """
 from __future__ import annotations
 

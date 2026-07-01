@@ -1,9 +1,8 @@
-"""The model provider seam (L4) — one function, one swappable backend (P5).
+"""The model provider seam — one call, one swappable backend.
 
 Everything above talks to `LLMClient.complete_json(...)`. The concrete model,
-provider, base URL, and reasoning knobs live behind it. Reliability patterns are
-lifted from codex: exponential backoff with jitter, honor Retry-After, and treat
-malformed structured output as a retryable error.
+provider, base URL, and reasoning knobs live behind it. Transient failures and
+malformed JSON are retried with exponential backoff that honors Retry-After.
 """
 from __future__ import annotations
 
@@ -25,7 +24,7 @@ def _load_env():
         return
     try:
         from dotenv import load_dotenv
-        # repo root is two levels up from this file (wiki/llm/client.py)
+        # repo root is two levels up from this file (atlas/llm/client.py)
         load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     except Exception:
         pass
@@ -87,46 +86,34 @@ class LLMClient:
         self.max_retries = max_retries
         self.usage = Usage()
 
-    def chat(self, messages, tools=None, effort=None):
-        """One tool-calling turn. Returns the assistant message (which may carry
-        .tool_calls). Retries transient errors with backoff."""
-        extra = {}
-        eff = effort if effort is not None else self.effort
-        if eff:
-            extra["reasoning"] = {"effort": eff}
-        last_err = None
-        for attempt in range(self.max_retries):
-            try:
-                resp = self._client.chat.completions.create(
-                    model=self.model_id, messages=messages,
-                    tools=tools or None, tool_choice="auto" if tools else None,
-                    extra_body=extra or None,
-                )
-                self.usage.add(getattr(resp, "usage", None))
-                return resp.choices[0].message
-            except Exception as e:
-                last_err = e
-                delay = _retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1))
-                if attempt < self.max_retries - 1:
-                    time.sleep(delay)
-        raise RuntimeError(f"chat call failed after {self.max_retries} tries: {last_err}")
-
-    def complete_json(self, system: str, user: str, effort=None):
-        """Return parsed JSON from the model. Retries transient errors and
-        malformed JSON with backoff; raises after `max_retries`."""
+    def complete_json(self, system: str, user: str, effort=None, schema=None, schema_name="output"):
+        """Return parsed JSON from the model. When `schema` is given, use genuine
+        structured outputs (response_format=json_schema, strict) so the model is
+        constrained to the schema at decode time — not merely asked to emit JSON.
+        Retries transient errors and malformed JSON with backoff."""
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user}]
-        extra = {}
         eff = effort if effort is not None else self.effort
-        if eff:
+        extra = {}
+        if eff is not None and str(eff).lower() in ("none", "off", "false"):
+            extra["reasoning"] = {"enabled": False}          # turn thinking off
+        elif eff:
             extra["reasoning"] = {"effort": eff}
+        if schema is not None:
+            # require a provider that actually enforces the schema, don't silently
+            # fall back to a free-form completion.
+            extra["provider"] = {"require_parameters": True}
+            response_format = {"type": "json_schema",
+                               "json_schema": {"name": schema_name, "strict": True, "schema": schema}}
+        else:
+            response_format = {"type": "json_object"}
 
         last_err = None
         for attempt in range(self.max_retries):
             try:
                 resp = self._client.chat.completions.create(
                     model=self.model_id, messages=messages,
-                    response_format={"type": "json_object"}, extra_body=extra or None,
+                    response_format=response_format, extra_body=extra or None,
                 )
                 self.usage.add(getattr(resp, "usage", None))
                 return _extract_json(resp.choices[0].message.content or "")

@@ -4,9 +4,9 @@ Two tools over your local iMessage history:
 
 - **`imessage`** — read and export your chats faithfully, as a **CLI** or **SDK**
   (this README). Stdlib only — nothing to install.
-- **`wiki`** — build a cited, Wikipedia-style knowledge base over a conversation
-  (people, events, topics, a derived timeline), every claim traced to a message.
-  See [`wiki/README.md`](wiki/README.md) and [`docs/wiki-agent-design.md`](docs/wiki-agent-design.md).
+- **`atlas`** — build a cited, Wikipedia-style knowledge base over a conversation.
+  A layered pipeline: it first extracts granular, cited observations from the chat
+  (Layer 1), then composes them into articles. Needs an OpenRouter key.
 
 ## imessage
 

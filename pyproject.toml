@@ -5,19 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "imessage-analysis"
 version = "0.1.0"
-description = "Read your local iMessage history (imessage) and build a cited wiki over it (wiki)."
+description = "Read your local iMessage history (imessage) and build a wiki over it (atlas)."
 requires-python = ">=3.9"
 dependencies = []                          # imessage is stdlib-only
 
 [project.optional-dependencies]
-wiki = ["openai>=1.0", "python-dotenv"]    # the wiki agent (L4 model seam)
+atlas = ["openai>=1.0", "python-dotenv"]   # the wiki pipeline (model seam)
 
 [project.scripts]
 imsg = "imessage.__main__:main"
-wiki = "wiki.__main__:main"
 
 [tool.setuptools]
-packages = ["imessage", "wiki", "wiki.store", "wiki.llm", "wiki.agent", "wiki.eval"]
+packages = ["imessage", "atlas", "atlas.llm"]
 
 [tool.setuptools.package-data]
-wiki = ["prompts/*.md"]
+atlas = ["prompts/*.md"]
