@@ -94,7 +94,9 @@ def _dedup(observations) -> list:
 def extract_all(chat_ids, config: ExtractConfig = None, limit_chunks=None, verbose=True):
     """Extract → validate → dedup. Returns a list of clean Observations."""
     config = config or ExtractConfig()
-    db = MessagesDB()
+    # respect the user's merges/renames (same auto-detect as the imessage CLI)
+    ident = "identities.json" if Path("identities.json").exists() else None
+    db = MessagesDB(identities=ident)
     msgs = db.messages(chat_ids)
     valid_ids = {m.rowid for m in msgs}
     participants = _participants(msgs)
