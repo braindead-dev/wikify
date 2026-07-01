@@ -8,6 +8,15 @@ This document is the spine: the principles and the clean architecture. It is
 deliberately not a spec — it fixes the *shape* and the *invariants*, and leaves
 implementation latitude inside them.
 
+> **Implementation note.** The principles below (P1–P8) hold as written. The
+> mechanism evolved from the "structured-edit reducer" first sketched here to a
+> **writer agent**: parallel *scouts* capture cited evidence into a `limbo/` store,
+> a *planner* promotes what has matured, and parallel *curators* synthesize each
+> subject's evidence into a deep article (a biography, or a joke's full arc), rather
+> than appending edits. The append-reducer produced timelines, not encyclopedias;
+> the map→reduce-over-limbo produces articles. See `wiki/README.md` and
+> `wiki/prompts/{scout,writer}.md` for the current shape.
+
 ---
 
 ## 1. Core principles
