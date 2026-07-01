@@ -2,13 +2,12 @@
 
 Each chunk is a plain string of ID-tagged messages; each extraction is one
 structured-output completion (genuine json_schema, no tools). Chunks overlap so
-nothing falls in a seam. Every observation is then validated against the real
-message ids before it is written to `<chat_dir>/observations.json`.
+nothing falls in a seam. Observations are validated against the real message ids,
+then streamed to disk chunk by chunk via `RunStore` — resumable and order-preserving.
 """
 from __future__ import annotations
 
-import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from imessage.render import format_message
 from .config import ExtractConfig
 from .llm import LLMClient
 from .observation import TYPES, Observation, observations_schema
+from .store import RunStore
 
 _PROMPTS = Path(__file__).resolve().parent / "prompts"
 
@@ -35,9 +35,10 @@ def _participants(messages) -> list:
     return sorted({m.sender for m in messages if not m.system and m.sender})
 
 
-def chunk_by_tokens(messages, chunk_tokens, overlap_tokens):
+def chunk_messages(messages, chunk_tokens, overlap_tokens) -> list:
     """Split into ~chunk_tokens slices of ID-tagged lines, each overlapping the
-    previous by ~overlap_tokens so a thread spanning a seam is seen whole."""
+    previous by ~overlap_tokens so a thread spanning a seam is seen whole. Each
+    chunk carries its text and the row-id span it covers."""
     lines = [format_message(m, ids=True) for m in messages]
     tks = [_toks(ln) for ln in lines]
     chunks, i, n = [], 0, len(lines)
@@ -46,7 +47,8 @@ def chunk_by_tokens(messages, chunk_tokens, overlap_tokens):
         while j < n and t < chunk_tokens:
             t += tks[j]
             j += 1
-        chunks.append("\n".join(lines[i:j]))
+        chunks.append({"text": "\n".join(lines[i:j]), "first_id": messages[i].rowid,
+                       "last_id": messages[j - 1].rowid, "n_messages": j - i})
         if j >= n:
             break
         back, ov = j, 0
@@ -64,35 +66,31 @@ def contact_directory(db, messages) -> str:
 
 
 def extract_chunk(chunk_text, contacts, schema, llm, effort) -> list:
+    """Extract one chunk. Raises on API failure (after retries) so the caller can
+    record it; a chunk with genuinely nothing to say returns an empty list."""
     system = (_prompt("extract.md")
               .replace("{contacts}", contacts)
               .replace("{types}", ", ".join(TYPES)))
     user = ("Transcript chunk:\n" + chunk_text +
             "\n\nExtract every wiki-worthy observation from this chunk.")
-    try:
-        out = llm.complete_json(system, user, effort=effort,
-                                schema=schema, schema_name="observations")
-    except Exception as e:
-        print(f"  chunk FAILED — {str(e)[:100]}", flush=True)
-        return []
+    out = llm.complete_json(system, user, effort=effort, schema=schema, schema_name="observations")
     raw = out.get("observations", []) if isinstance(out, dict) else []
     return [Observation.from_dict(o) for o in raw if isinstance(o, dict)]
 
 
-def _dedup(observations) -> list:
-    """Drop exact duplicates the chunk overlaps produce (same title + same sources).
-    Fuzzy near-duplicates are left for a later layer to merge."""
-    seen, out = set(), []
-    for o in observations:
-        key = (o.title.lower(), tuple(sorted(o.sources)))
-        if key not in seen:
-            seen.add(key)
-            out.append(o)
-    return out
+def _bar(done, total, width=26):
+    fill = int(width * done / total) if total else width
+    return "█" * fill + "░" * (width - fill)
 
 
-def extract_all(chat_ids, config: ExtractConfig = None, limit_chunks=None, verbose=True):
-    """Extract → validate → dedup. Returns a list of clean Observations."""
+def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
+                       resume=True, limit_chunks=None, verbose=True):
+    """Layer 1 end to end. Extracts every chunk in parallel and streams each to
+    disk the instant it finishes (`chats/<slug>/chunks/NNN.json`), tracking status
+    in `manifest.json`. Resumable: re-running skips done chunks and retries the
+    rest. Validation only drops sources that aren't real message ids (and the
+    observation if none survive) and non-participant people — never merges or
+    dedups, so Layer 1 stays a faithful capture."""
     config = config or ExtractConfig()
     # respect the user's merges/renames (same auto-detect as the imessage CLI)
     ident = "identities.json" if Path("identities.json").exists() else None
@@ -102,49 +100,51 @@ def extract_all(chat_ids, config: ExtractConfig = None, limit_chunks=None, verbo
     participants = _participants(msgs)
     contacts = contact_directory(db, msgs)
     schema = observations_schema(participants)
+    chunks = chunk_messages(msgs, config.chunk_tokens, config.overlap_tokens)
 
-    chunks = chunk_by_tokens(msgs, config.chunk_tokens, config.overlap_tokens)
+    meta = {"chat_ids": list(chat_ids), "model": config.model,
+            "chunk_tokens": config.chunk_tokens, "overlap_tokens": config.overlap_tokens}
+    store = RunStore(chat_dir, meta, len(chunks))
+    if not resume:
+        store.reset()
+    store.set_spans(chunks)
+
+    todo = store.pending()
     if limit_chunks:
-        chunks = chunks[:limit_chunks]
+        todo = todo[:limit_chunks]
+    total = len(chunks)
+    done = total - len(store.pending())
+    workers = config.workers or max(1, len(todo))     # 0 → all pending chunks at once
     if verbose:
-        print(f"[extract] {len(msgs)} msgs → {len(chunks)} chunks "
-              f"(~{config.chunk_tokens // 1000}k tok, {config.overlap_tokens // 1000}k overlap) "
-              f"· {len(participants)} participants · model {config.model} · x{config.workers}",
-              flush=True)
+        print(f"[extract] {len(msgs)} msgs → {total} chunks · {len(participants)} participants "
+              f"· {config.model} · x{workers} workers", flush=True)
+        if done:
+            print(f"  resuming — {done} chunks already done, {len(todo)} to run", flush=True)
 
     llm = LLMClient(config.model)
-    raw = []
-    with ThreadPoolExecutor(max_workers=config.workers) as pool:
-        for i, obs in enumerate(pool.map(
-                lambda c: extract_chunk(c, contacts, schema, llm, config.effort), chunks), 1):
-            raw.extend(obs)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(extract_chunk, chunks[i]["text"], contacts, schema,
+                               llm, config.effort): i for i in todo}
+        for fut in as_completed(futures):
+            i = futures[fut]
+            try:
+                store.write_chunk(i, [c for o in fut.result()
+                                      if (c := o.cleaned(valid_ids, participants))])
+            except Exception as e:
+                store.mark_failed(i, e)
+                if verbose:
+                    print(f"\n  chunk {i} failed — {str(e)[:80]}", flush=True)
+            done += 1
             if verbose:
-                print(f"  chunk {i}/{len(chunks)}: {len(obs)} observations", flush=True)
-
-    clean = _dedup([c for o in raw if (c := o.cleaned(valid_ids, participants))])
+                print(f"\r  [{_bar(done, total)}] {done}/{total} chunks", end="", flush=True)
     if verbose:
-        dropped = len(raw) - len(clean)
-        print(f"[extract] {len(raw)} raw → {len(clean)} valid "
-              f"({dropped} dropped as invalid/duplicate) · {llm.usage}", flush=True)
-    return clean
+        print(flush=True)
 
-
-def save_observations(observations, path, meta=None):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {**(meta or {}), "count": len(observations),
-               "observations": [o.to_dict() for o in observations]}
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
-
-
-def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
-                       limit_chunks=None, verbose=True):
-    """Layer 1 end to end: extract → validate → write `<chat_dir>/observations.json`."""
-    config = config or ExtractConfig()
-    observations = extract_all(chat_ids, config, limit_chunks, verbose)
-    path = Path(chat_dir) / "observations.json"
-    save_observations(observations, path,
-                      meta={"chat_ids": list(chat_ids), "model": config.model})
+    observations = store.assemble()
     if verbose:
-        print(f"[extract] wrote {len(observations)} observations → {path}", flush=True)
+        failed = store.failed()
+        msg = f"[extract] {len(observations)} observations → {store.obs_path}"
+        if failed:
+            msg += f" · {len(failed)} chunks failed, rerun to retry: {failed}"
+        print(msg + f" · {llm.usage}", flush=True)
     return observations
