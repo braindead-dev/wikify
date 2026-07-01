@@ -65,7 +65,7 @@ def contact_directory(db, messages) -> str:
     return "\n".join(lines) + "\n\nparticipants: " + ", ".join(_participants(messages))
 
 
-def extract_chunk(chunk_text, contacts, schema, llm, effort) -> list:
+def extract_chunk(chunk_text, contacts, schema, llm, effort, trace=None) -> list:
     """Extract one chunk. Raises on API failure (after retries) so the caller can
     record it; a chunk with genuinely nothing to say returns an empty list."""
     system = (_prompt("extract.md")
@@ -73,7 +73,8 @@ def extract_chunk(chunk_text, contacts, schema, llm, effort) -> list:
               .replace("{types}", ", ".join(TYPES)))
     user = ("Transcript chunk:\n" + chunk_text +
             "\n\nExtract every wiki-worthy observation from this chunk.")
-    out = llm.complete_json(system, user, effort=effort, schema=schema, schema_name="observations")
+    out = llm.complete_json(system, user, effort=effort, schema=schema,
+                            schema_name="observations", trace=trace)
     raw = out.get("observations", []) if isinstance(out, dict) else []
     return [Observation.from_dict(o) for o in raw if isinstance(o, dict)]
 
@@ -121,10 +122,18 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         if done:
             print(f"  resuming — {done} chunks already done, {len(todo)} to run", flush=True)
 
+    def trace_sink(index):
+        # failures are always traced (so they stay diagnosable); successful calls
+        # are traced only when config.trace is on.
+        def sink(record):
+            if config.trace or record.get("status") == "error":
+                store.write_trace(index, record)
+        return sink
+
     llm = LLMClient(config.model)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(extract_chunk, chunks[i]["text"], contacts, schema,
-                               llm, config.effort): i for i in todo}
+                               llm, config.effort, trace_sink(i)): i for i in todo}
         for fut in as_completed(futures):
             i = futures[fut]
             try:

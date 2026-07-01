@@ -82,6 +82,14 @@ class RunStore:
         e["status"], e["error"] = "failed", str(error)[:300]
         self._save()
 
+    def write_trace(self, index, record):
+        """Persist the full request/response of a chunk's call for observability
+        (`traces/NNN.json`). Written from the worker thread; the path is unique
+        per chunk, so no locking is needed."""
+        traces_dir = self.dir / "traces"
+        traces_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(traces_dir / f"{index:03d}.json", record)
+
     def assemble(self):
         """Concatenate all done chunk files, in index order, into observations.json."""
         obs = []

@@ -15,3 +15,4 @@ class ExtractConfig:
     overlap_tokens: int = 4_000          # overlap between consecutive chunks
     workers: int = 0                     # parallel extraction calls; 0 = all chunks at once
     effort: str = "medium"               # reasoning effort for extraction
+    trace: bool = True                   # save each call's prompt+output to traces/ (failures always saved)

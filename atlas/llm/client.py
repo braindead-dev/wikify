@@ -10,12 +10,25 @@ import json
 import os
 import random
 import re
+import sys
 import time
 from pathlib import Path
 
 from .config import DEFAULT_MODEL, MODELS, PROVIDERS
 
 _ENV_LOADED = False
+
+
+class LLMError(RuntimeError):
+    """A model call that ultimately failed. Carries the raw output and the
+    finish reason so the failure is diagnosable — e.g. finish_reason='length'
+    means the response was truncated at the output-token limit."""
+
+    def __init__(self, message, *, finish_reason=None, raw="", attempts=0):
+        super().__init__(message)
+        self.finish_reason = finish_reason
+        self.raw = raw
+        self.attempts = attempts
 
 
 def _load_env():
@@ -86,11 +99,18 @@ class LLMClient:
         self.max_retries = max_retries
         self.usage = Usage()
 
-    def complete_json(self, system: str, user: str, effort=None, schema=None, schema_name="output"):
+    def complete_json(self, system: str, user: str, effort=None, schema=None,
+                      schema_name="output", trace=None):
         """Return parsed JSON from the model. When `schema` is given, use genuine
         structured outputs (response_format=json_schema, strict) so the model is
         constrained to the schema at decode time — not merely asked to emit JSON.
-        Retries transient errors and malformed JSON with backoff."""
+
+        Transient errors are retried with backoff and each retry is logged (not
+        silent). A truncated response (finish_reason='length') is not retried —
+        it would only truncate again — and fails fast with a clear reason. On
+        exhaustion raises `LLMError` carrying the raw output and finish reason.
+        If `trace` is given it is called with a full record of the request and
+        outcome (model, params, exact prompt, raw output, finish reason)."""
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": user}]
         eff = effort if effort is not None else self.effort
@@ -108,7 +128,11 @@ class LLMClient:
         else:
             response_format = {"type": "json_object"}
 
-        last_err = None
+        record = {"model": self.model_id, "effort": eff, "schema": schema_name,
+                  "system": system, "user": user}
+        last_err = last_finish = None
+        last_raw = ""
+        attempt = 0
         for attempt in range(self.max_retries):
             try:
                 resp = self._client.chat.completions.create(
@@ -116,13 +140,31 @@ class LLMClient:
                     response_format=response_format, extra_body=extra or None,
                 )
                 self.usage.add(getattr(resp, "usage", None))
-                return _extract_json(resp.choices[0].message.content or "")
+                choice = resp.choices[0]
+                last_raw = choice.message.content or ""
+                last_finish = getattr(choice, "finish_reason", None)
+                data = _extract_json(last_raw)
+                if trace:
+                    trace({**record, "status": "ok", "attempts": attempt + 1,
+                           "finish_reason": last_finish, "response": last_raw})
+                return data
             except Exception as e:                       # transient API or JSON error
                 last_err = e
-                delay = _retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1))
+                if last_finish == "length":              # truncated — retrying won't help
+                    break
                 if attempt < self.max_retries - 1:
-                    time.sleep(delay)
-        raise RuntimeError(f"model call failed after {self.max_retries} tries: {last_err}")
+                    print(f"  [llm] retry {attempt + 1}/{self.max_retries}: "
+                          f"{type(e).__name__}: {str(e)[:100]}", file=sys.stderr, flush=True)
+                    time.sleep(_retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1)))
+
+        detail = ("output truncated (finish_reason=length) — chunk too dense; lower chunk_tokens"
+                  if last_finish == "length" else str(last_err))
+        err = LLMError(f"failed after {attempt + 1} tries: {detail}",
+                       finish_reason=last_finish, raw=last_raw, attempts=attempt + 1)
+        if trace:
+            trace({**record, "status": "error", "attempts": attempt + 1,
+                   "finish_reason": last_finish, "response": last_raw, "error": str(err)})
+        raise err
 
 
 def _retry_after(err):
