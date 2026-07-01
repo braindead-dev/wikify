@@ -66,7 +66,7 @@ def contact_directory(db, messages) -> str:
     return "\n".join(lines) + "\n\nparticipants: " + ", ".join(_participants(messages))
 
 
-def extract_chunk(chunk_text, contacts, schema, llm, effort, trace=None) -> list:
+def extract_chunk(chunk_text, contacts, schema, llm, effort, trace=None, max_tokens=None) -> list:
     """Extract one chunk. Raises on API failure (after retries) so the caller can
     record it; a chunk with genuinely nothing to say returns an empty list."""
     system = (_prompt("extract.md")
@@ -75,7 +75,7 @@ def extract_chunk(chunk_text, contacts, schema, llm, effort, trace=None) -> list
     user = ("Transcript chunk:\n" + chunk_text +
             "\n\nExtract every wiki-worthy observation from this chunk.")
     out = llm.complete_json(system, user, effort=effort, schema=schema,
-                            schema_name="observations", trace=trace)
+                            schema_name="observations", trace=trace, max_tokens=max_tokens)
     raw = out.get("observations", []) if isinstance(out, dict) else []
     return [Observation.from_dict(o) for o in raw if isinstance(o, dict)]
 
@@ -134,8 +134,9 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     llm = LLMClient(config.model)
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(extract_chunk, chunks[i]["text"], contacts, schema,
-                               llm, config.effort, trace_sink(i)): i for i in todo}
+        futures = {pool.submit(extract_chunk, chunks[i]["text"], contacts, schema, llm,
+                               config.effort, trace_sink(i), config.max_tokens or None): i
+                   for i in todo}
         for fut in as_completed(futures):
             i = futures[fut]
             try:

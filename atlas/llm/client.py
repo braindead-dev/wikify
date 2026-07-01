@@ -101,7 +101,7 @@ class LLMClient:
         self.usage = Usage()
 
     def complete_json(self, system: str, user: str, effort=None, schema=None,
-                      schema_name="output", trace=None):
+                      schema_name="output", trace=None, max_tokens=None):
         """Return parsed JSON from the model. When `schema` is given, use genuine
         structured outputs (response_format=json_schema, strict) so the model is
         constrained to the schema at decode time — not merely asked to emit JSON.
@@ -132,22 +132,23 @@ class LLMClient:
         started = time.time()
         meta = {"model": self.model_id, "effort": eff, "schema": schema_name,
                 "started_at": datetime.now().isoformat(timespec="seconds")}
-        last_err = last_finish = None
+        last_err = last_finish = last_prov = None
         last_raw = ""
         attempt = 0
         for attempt in range(self.max_retries):
             try:
                 resp = self._client.chat.completions.create(
-                    model=self.model_id, messages=messages,
+                    model=self.model_id, messages=messages, max_tokens=max_tokens,
                     response_format=response_format, extra_body=extra or None,
                 )
                 self.usage.add(getattr(resp, "usage", None))
                 choice = resp.choices[0]
                 last_raw = choice.message.content or ""
                 last_finish = getattr(choice, "finish_reason", None)
+                last_prov = getattr(resp, "provider", None)
                 data = _extract_json(last_raw)
                 if trace:
-                    trace({**meta, "status": "ok", "attempts": attempt + 1,
+                    trace({**meta, "status": "ok", "provider": last_prov, "attempts": attempt + 1,
                            "finish_reason": last_finish, "duration_s": round(time.time() - started, 2),
                            "usage": _usage_dict(getattr(resp, "usage", None)),
                            "system": system, "user": user, "response": last_raw})
@@ -161,12 +162,12 @@ class LLMClient:
                           f"{type(e).__name__}: {str(e)[:100]}", file=sys.stderr, flush=True)
                     time.sleep(_retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1)))
 
-        detail = ("output truncated (finish_reason=length) — chunk too dense; lower chunk_tokens"
-                  if last_finish == "length" else str(last_err))
+        detail = (f"output truncated (finish_reason=length, provider={last_prov}) — raise max_tokens "
+                  "or lower chunk_tokens" if last_finish == "length" else str(last_err))
         err = LLMError(f"failed after {attempt + 1} tries: {detail}",
                        finish_reason=last_finish, raw=last_raw, attempts=attempt + 1)
         if trace:
-            trace({**meta, "status": "error", "attempts": attempt + 1,
+            trace({**meta, "status": "error", "provider": last_prov, "attempts": attempt + 1,
                    "finish_reason": last_finish, "duration_s": round(time.time() - started, 2),
                    "error": str(err), "system": system, "user": user, "response": last_raw})
         raise err

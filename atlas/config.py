@@ -16,3 +16,7 @@ class ExtractConfig:
     workers: int = 0                     # parallel extraction calls; 0 = all chunks at once
     effort: str = "medium"               # reasoning effort for extraction
     trace: bool = True                   # save each call's prompt+output to traces/ (failures always saved)
+    # Requested output ceiling. Reasoning + answer share this budget, and asking
+    # for a large one steers OpenRouter to providers that can deliver it instead of
+    # low-cap ones that would truncate the JSON. 0 = don't set (use provider default).
+    max_tokens: int = 128_000
