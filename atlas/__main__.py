@@ -37,6 +37,7 @@ def main(argv=None):
     p.add_argument("--chats", help="comma-separated chat row ids (see `imsg chats`); "
                                    "only needed on the first run")
     p.add_argument("--fresh", action="store_true", help="discard the existing run and redo it")
+    p.add_argument("--redo", help="comma-separated chunk indexes to re-run (e.g. after inspecting)")
     p.add_argument("--limit", type=int, help="only run this many chunks (for trying things out)")
     for f in fields(ExtractConfig):      # every config knob is a flag, defaults from the dataclass
         flag = f"--{f.name.replace('_', '-')}"
@@ -48,6 +49,12 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     chat_dir = Path("chats") / args.slug
+    if args.redo:                        # mark specific chunks pending so the run redoes them
+        path = chat_dir / "manifest.json"
+        manifest = json.loads(path.read_text())
+        for i in args.redo.replace(",", " ").split():
+            manifest["chunks"][int(i)]["status"] = "pending"
+        path.write_text(json.dumps(manifest, indent=2))
     config = ExtractConfig(**{f.name: getattr(args, f.name) for f in fields(ExtractConfig)})
     observations = build_observations(chat_dir, _chat_ids(args, chat_dir), config,
                                       resume=not args.fresh, limit_chunks=args.limit)
