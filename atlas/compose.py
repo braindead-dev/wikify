@@ -187,7 +187,16 @@ def polish(article, allowed, page_ids) -> str:
     lines = article.strip().split("\n")
     if lines and lines[0].lstrip().startswith("# "):
         lines = lines[1:]
-    article = "\n".join(lines).strip()
+    # long bullet lists can degenerate into verbatim repetition — keep first occurrence
+    seen, out = set(), []
+    for ln in lines:
+        if ln.lstrip().startswith(("-", "*")):
+            key = ln.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(ln)
+    article = "\n".join(out).strip()
     article = re.sub(r"[ \t]+([.,;:!?])", r"\1", article)
     return re.sub(r"[ \t]{2,}", " ", article)
 
