@@ -95,12 +95,13 @@ class LLMClient:
         self._client = OpenAI(base_url=prov["base_url"], api_key=key,
                               default_headers={"X-Title": "atlas"})
         self.model_id = cfg["model"]
+        self.serve_via = cfg.get("serve_via")
         self.effort = effort if effort is not None else cfg.get("reasoning")
         self.max_retries = max_retries
         self.usage = Usage()
 
     def complete_json(self, system: str, user: str, effort=None, schema=None,
-                      schema_name="output", trace=None, max_tokens=None):
+                      schema_name="output", trace=None, max_tokens=None, temperature=None):
         """Return parsed JSON from the model. When `schema` is given, use genuine
         structured outputs (response_format=json_schema, strict) so the model is
         constrained to the schema at decode time — not merely asked to emit JSON.
@@ -119,14 +120,19 @@ class LLMClient:
             extra["reasoning"] = {"enabled": False}          # turn thinking off
         elif eff:
             extra["reasoning"] = {"effort": eff}
+        provider = {}
+        if self.serve_via:
+            provider["order"] = self.serve_via     # pinned order; fallbacks stay allowed
         if schema is not None:
             # require a provider that actually enforces the schema, don't silently
             # fall back to a free-form completion.
-            extra["provider"] = {"require_parameters": True}
+            provider["require_parameters"] = True
             response_format = {"type": "json_schema",
                                "json_schema": {"name": schema_name, "strict": True, "schema": schema}}
         else:
             response_format = {"type": "json_object"}
+        if provider:
+            extra["provider"] = provider
 
         started = time.time()
         state = {"started_at": datetime.now().isoformat(timespec="seconds"),
@@ -136,8 +142,8 @@ class LLMClient:
 
         def emit(status, **outcome):
             if trace:
-                trace({"model": self.model_id, "effort": eff, "schema": schema_name,
-                       **state, "status": status,
+                trace({"model": self.model_id, "effort": eff, "temperature": temperature,
+                       "schema": schema_name, **state, "status": status,
                        "duration_s": round(time.time() - started, 2), **outcome,
                        "system": system, "user": user, "response": last_raw})
 
@@ -146,7 +152,8 @@ class LLMClient:
             try:
                 resp = self._client.chat.completions.create(
                     model=self.model_id, messages=messages, max_tokens=max_tokens,
-                    response_format=response_format, extra_body=extra or None,
+                    temperature=temperature, response_format=response_format,
+                    extra_body=extra or None,
                 )
                 self.usage.add(getattr(resp, "usage", None))
                 choice = resp.choices[0]

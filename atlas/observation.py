@@ -28,6 +28,8 @@ TYPES = [
     "inside vocab",         # a coined word / slang term
     "inside joke",          # a running bit / recurring joke
     "quote",                # a memorable line worth preserving verbatim
+    "speech pattern",       # a verbal signature: a tic, phrasing habit, spelling, or way of talking
+    "nickname",             # what someone gets called (or calls themselves), and by whom
     "opinion / belief",     # a stance someone takes
     "preference / taste",   # likes/dislikes, music, food, games
     "plan",                 # something the group intends to do

@@ -64,13 +64,15 @@ def system_prompt(db, messages) -> str:
     return _PROMPT.read_text().replace("{contacts}", contacts)
 
 
-def extract_chunk(llm, system, chunk_text, schema, *, effort, max_tokens, trace) -> list:
+def extract_chunk(llm, system, chunk_text, schema, *, effort, max_tokens, trace,
+                  temperature=None) -> list:
     """Extract one chunk. Raises on API failure (after retries) so the caller can
     record it; a chunk with genuinely nothing to say returns an empty list."""
     user = ("Transcript chunk:\n" + chunk_text +
             "\n\nExtract every wiki-worthy observation from this chunk.")
     out = llm.complete_json(system, user, effort=effort, schema=schema,
-                            schema_name="observations", trace=trace, max_tokens=max_tokens)
+                            schema_name="observations", trace=trace,
+                            max_tokens=max_tokens, temperature=temperature)
     raw = out.get("observations", []) if isinstance(out, dict) else []
     return [Observation.from_dict(o) for o in raw if isinstance(o, dict)]
 
@@ -132,12 +134,23 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         return sink
 
     llm = LLMClient(config.model)
+
+    def extract_dense(i):
+        """One chunk, with the variance gate: a run that lands far under the
+        expected observation density is a lazy sample, not a sparse chunk —
+        take one more sample and keep the richer result."""
+        kw = dict(effort=config.effort, max_tokens=config.max_tokens or None,
+                  trace=trace_sink(i), temperature=config.temperature)
+        obs = extract_chunk(llm, system, chunks[i]["text"], schema, **kw)
+        if len(obs) < config.min_density * chunks[i]["n_messages"]:
+            retry = extract_chunk(llm, system, chunks[i]["text"], schema, **kw)
+            if len(retry) > len(obs):
+                obs = retry
+        return obs
+
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(extract_chunk, llm, system, chunks[i]["text"], schema,
-                               effort=config.effort, max_tokens=config.max_tokens or None,
-                               trace=trace_sink(i)): i
-                   for i in todo}
+        futures = {pool.submit(extract_dense, i): i for i in todo}
         for fut in as_completed(futures):
             i = futures[fut]
             try:

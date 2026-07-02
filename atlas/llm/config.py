@@ -15,7 +15,12 @@ PROVIDERS = {
 
 MODELS = {
     # key                   provider       wire model id                    default effort
-    "deepseek-v4-flash": {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash", "reasoning": "high"},
+    # "serve_via" pins the serving-provider order at the router (fallbacks stay
+    # allowed). The same open model differs wildly across serving stacks — in
+    # thoroughness and in output-token caps — so pinning keeps runs consistent
+    # and avoids low-cap providers that truncate long structured outputs.
+    "deepseek-v4-flash": {"provider": "openrouter", "model": "deepseek/deepseek-v4-flash", "reasoning": "high",
+                          "serve_via": ["StreamLake", "Fireworks"]},
     "deepseek-v4":       {"provider": "openrouter", "model": "deepseek/deepseek-v4",        "reasoning": "high"},
     "gpt-5":             {"provider": "openrouter", "model": "openai/gpt-5",                "reasoning": "medium"},
     "claude-sonnet":     {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6", "reasoning": None},
