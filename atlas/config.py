@@ -5,6 +5,19 @@ from dataclasses import dataclass
 
 
 @dataclass
+class ComposeConfig:
+    """Layer 2 (observations → wiki)."""
+    model: str = "deepseek-v4-flash"     # any key in the model registry
+    workers: int = 0                     # parallel route/write calls; 0 = all at once
+    effort: str = "medium"               # reasoning effort: none | low | medium | high
+    temperature: float = 0.3             # low = consistent output across runs
+    max_tokens: int = 128_000            # output ceiling (also steers provider routing)
+    route_batch: int = 500               # observations per routing call
+    quotes_per_obs: int = 4              # original messages quoted under each observation
+    trace: bool = True                   # save each call's prompt+output (failures always saved)
+
+
+@dataclass
 class ExtractConfig:
     model: str = "deepseek-v4-flash"     # any key in the model registry
     # Chunk size trades granularity against call count: a smaller window is mined

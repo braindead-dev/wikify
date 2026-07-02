@@ -1,23 +1,41 @@
-"""atlas CLI — run Layer 1 over a chat.
+"""atlas CLI — the layered pipeline.
 
-    python3 -m atlas <slug> --chats 101,102        # first run: which chat rows
-    python3 -m atlas <slug>                        # later: resume / retry failures
-    python3 -m atlas <slug> --fresh                # discard the run and redo it
+    atlas extract <slug> --chats 101,102     # Layer 1: chat → observations
+    atlas extract <slug>                     # resume / retry failures
+    atlas wiki <slug>                        # Layer 2: observations → wiki pages
+    atlas wiki <slug> --stage plan           # run/inspect one sublayer at a time
 
 Everything for a run lives in chats/<slug>/ (observations.json, manifest.json,
-chunks/, traces/). Any ExtractConfig knob is overridable via flags.
+chunks/, traces/, wiki/). Any config knob is overridable via flags.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
-from .config import ExtractConfig
+from .compose import build_wiki
+from .config import ComposeConfig, ExtractConfig
 from .extract import build_observations
+
+
+def _config_flags(parser, config_cls):
+    """Every config field becomes a flag, defaults from the dataclass."""
+    for f in fields(config_cls):
+        flag = f"--{f.name.replace('_', '-')}"
+        if isinstance(f.default, bool):
+            parser.add_argument(flag, action=argparse.BooleanOptionalAction, default=f.default)
+        else:
+            parser.add_argument(flag, type=type(f.default), default=f.default,
+                                help=f"default: {f.default}")
+
+
+def _config_from(args, config_cls):
+    return config_cls(**{f.name: getattr(args, f.name) for f in fields(config_cls)})
 
 
 def _chat_ids(args, chat_dir: Path):
@@ -31,23 +49,7 @@ def _chat_ids(args, chat_dir: Path):
     sys.exit("no --chats given and no prior run to resume — start with --chats <ids>")
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(prog="atlas", description="Build a cited wiki over a chat.")
-    p.add_argument("slug", help="name of this wiki; everything lives in chats/<slug>/")
-    p.add_argument("--chats", help="comma-separated chat row ids (see `imsg chats`); "
-                                   "only needed on the first run")
-    p.add_argument("--fresh", action="store_true", help="discard the existing run and redo it")
-    p.add_argument("--redo", help="comma-separated chunk indexes to re-run (e.g. after inspecting)")
-    p.add_argument("--limit", type=int, help="only run this many chunks (for trying things out)")
-    for f in fields(ExtractConfig):      # every config knob is a flag, defaults from the dataclass
-        flag = f"--{f.name.replace('_', '-')}"
-        if isinstance(f.default, bool):
-            p.add_argument(flag, action=argparse.BooleanOptionalAction, default=f.default)
-        else:
-            p.add_argument(flag, type=type(f.default), default=f.default,
-                           help=f"default: {f.default}")
-    args = p.parse_args(argv)
-
+def cmd_extract(args):
     chat_dir = Path("chats") / args.slug
     if args.redo:                        # mark specific chunks pending so the run redoes them
         path = chat_dir / "manifest.json"
@@ -55,11 +57,46 @@ def main(argv=None):
         for i in args.redo.replace(",", " ").split():
             manifest["chunks"][int(i)]["status"] = "pending"
         path.write_text(json.dumps(manifest, indent=2))
-    config = ExtractConfig(**{f.name: getattr(args, f.name) for f in fields(ExtractConfig)})
-    observations = build_observations(chat_dir, _chat_ids(args, chat_dir), config,
+    observations = build_observations(chat_dir, _chat_ids(args, chat_dir),
+                                      _config_from(args, ExtractConfig),
                                       resume=not args.fresh, limit_chunks=args.limit)
     types = Counter(o.type for o in observations)
-    print("types: " + ", ".join(f"{t} ({n})" for t, n in types.most_common()))
+    print("top types: " + ", ".join(f"{t} ({n})" for t, n in types.most_common(12)))
+
+
+def cmd_wiki(args):
+    chat_dir = Path("chats") / args.slug
+    if args.fresh:
+        shutil.rmtree(chat_dir / "wiki", ignore_errors=True)
+    build_wiki(chat_dir, _config_from(args, ComposeConfig),
+               stage=args.stage, limit_pages=args.pages)
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="atlas", description="Build a cited wiki over a chat.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    e = sub.add_parser("extract", help="Layer 1: chat → cited observations")
+    e.add_argument("slug", help="name of this workspace; everything lives in chats/<slug>/")
+    e.add_argument("--chats", help="comma-separated chat row ids (see `imsg chats`); "
+                                   "only needed on the first run")
+    e.add_argument("--fresh", action="store_true", help="discard the existing run and redo it")
+    e.add_argument("--redo", help="comma-separated chunk indexes to re-run (e.g. after inspecting)")
+    e.add_argument("--limit", type=int, help="only run this many chunks (for trying things out)")
+    _config_flags(e, ExtractConfig)
+    e.set_defaults(fn=cmd_extract)
+
+    w = sub.add_parser("wiki", help="Layer 2: observations → wiki pages")
+    w.add_argument("slug", help="workspace under chats/<slug>/ (needs observations.json)")
+    w.add_argument("--fresh", action="store_true", help="discard the existing wiki and redo it")
+    w.add_argument("--stage", choices=["plan", "route", "all"], default="all",
+                   help="stop after this sublayer (for inspection)")
+    w.add_argument("--pages", type=int, help="only write this many pages (for trying things out)")
+    _config_flags(w, ComposeConfig)
+    w.set_defaults(fn=cmd_wiki)
+
+    args = p.parse_args(argv)
+    args.fn(args)
 
 
 if __name__ == "__main__":
