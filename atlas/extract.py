@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 
 from imessage import MessagesDB
@@ -97,7 +98,8 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     # respect the user's merges/renames (same auto-detect as the imessage CLI)
     ident = "identities.json" if Path("identities.json").exists() else None
     db = MessagesDB(identities=ident)
-    msgs = db.messages(chat_ids)
+    until = datetime.fromisoformat(config.until) if config.until else None
+    msgs = db.messages(chat_ids, until=until)
     valid_ids = {m.rowid for m in msgs}
     participants = _participants(msgs)
     system = system_prompt(db, msgs)
@@ -106,10 +108,9 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
 
     meta = {"chat_ids": list(chat_ids), "model": config.model,
             "chunk_tokens": config.chunk_tokens, "overlap_tokens": config.overlap_tokens}
-    store = RunStore(chat_dir, meta, len(chunks))
+    store = RunStore(chat_dir, meta, chunks)
     if not resume:
         store.reset()
-    store.set_spans(chunks)
 
     todo = store.pending()
     if limit_chunks:
@@ -122,8 +123,8 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
               f"· {config.model} · x{workers} workers", flush=True)
         if store.restarted:
             print("  config changed — prior run discarded, starting fresh", flush=True)
-        elif done:
-            print(f"  resuming — {done} chunks already done, {len(todo)} to run", flush=True)
+        elif store.carried and len(todo):
+            print(f"  {store.carried} chunks carried over — {len(todo)} to run", flush=True)
 
     def trace_sink(index):
         # failures are always traced (so they stay diagnosable); successful calls

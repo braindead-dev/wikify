@@ -247,6 +247,35 @@ def review_plan(llm, state, workspace, cfg, trace) -> int:
     return changed
 
 
+def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
+    """Update-mode planning: given only the NEW observations, decide whether any
+    genuinely new subject has emerged that deserves a page the tree doesn't have.
+    Usually returns nothing — most new material belongs on existing pages."""
+    system = ("You maintain the page tree of an existing wiki about a group chat. "
+              "Below are the tree and a batch of NEW observations. Propose a new "
+              "page ONLY for a genuinely new subject with enough material to "
+              "sustain an article — a new person entering the group's world, a new "
+              "running joke, a new event. Material that belongs on an existing page "
+              "needs nothing from you. Usually the answer is no new pages. "
+              "Page ids are type/slug (person|topic|event). JSON only.\n\n" + workspace)
+    user = ("PAGE TREE:\n" + _page_tree(state) + "\n\nNEW OBSERVATIONS:\n"
+            + "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(new_items)))
+    out = llm.complete_json(system, user, effort=cfg.effort, schema=plan_schema(),
+                            schema_name="plan", trace=trace, max_tokens=cfg.max_tokens,
+                            temperature=cfg.temperature)
+    added = []
+    for p in (out.get("pages") or []):
+        pid = str(p.get("id", "")).strip()
+        if _ID_RE.fullmatch(pid) and pid not in state["pages"]:
+            state["pages"][pid] = {"id": pid, "title": str(p.get("title") or pid).strip(),
+                                   "type": pid.split("/")[0],
+                                   "aliases": [str(a).strip() for a in p.get("aliases", [])
+                                               if str(a).strip()],
+                                   "status": "pending", "obs": []}
+            added.append(pid)
+    return added
+
+
 def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
     """batch: list of (key, obs). Returns {key: [page ids]} for every key."""
     system = (_prompt("route.md").replace("{workspace}", workspace)
@@ -360,6 +389,18 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
     workspace = workspace_header(db, data["chat_ids"], msgs, participants)
 
     state = _load_state(wiki_dir)
+    # re-extraction can reword observations near a grown chunk boundary; drop
+    # references to observation keys that no longer exist (their replacements
+    # arrive as new keys and route normally).
+    stale = [k for k in state["routed"] if k not in keyed]
+    for k in stale:
+        del state["routed"][k]
+    if stale:
+        for p in state["pages"].values():
+            p["obs"] = [k for k in p["obs"] if k in keyed]
+        if verbose:
+            print(f"[wiki] pruned {len(stale)} observations that no longer exist", flush=True)
+
     llm = LLMClient(cfg.model)
     t0 = time.time()
 
@@ -392,6 +433,14 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
 
     # ---- ROUTE
     todo = [k for k in order if k not in state["routed"]]
+    if todo and any(p["status"] == "written" for p in state["pages"].values()):
+        # update mode: let genuinely new subjects earn new pages before routing
+        added = extend_plan(llm, [(k, keyed[k]) for k in todo], state, workspace,
+                            cfg, sink("extend"))
+        if added:
+            _save_state(wiki_dir, state)
+            if verbose:
+                print(f"[plan] new pages from update: {', '.join(added)}", flush=True)
     if todo:
         batches = [todo[i:i + cfg.route_batch] for i in range(0, len(todo), cfg.route_batch)]
         workers = cfg.workers or len(batches)

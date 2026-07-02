@@ -22,6 +22,7 @@ class ComposeConfig:
 @dataclass
 class ExtractConfig:
     model: str = "deepseek-v4-flash"     # any key in the model registry
+    until: str = ""                      # only messages before this ISO date (empty = all)
     # Chunk size trades granularity against call count: a smaller window is mined
     # much more thoroughly (measured: ~5x more observations per message at small
     # sizes), and thorough extraction emits so much JSON that the model's output

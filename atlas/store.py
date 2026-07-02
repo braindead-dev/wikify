@@ -27,15 +27,18 @@ def _atomic_write(path: Path, data):
 class RunStore:
     """Tracks and persists one extraction run under `chat_dir`."""
 
-    def __init__(self, chat_dir, meta, n_chunks):
+    def __init__(self, chat_dir, meta, chunks):
         self.dir = Path(chat_dir)
         self.chunks_dir = self.dir / "chunks"
         self.traces_dir = self.dir / "traces"
         self.manifest_path = self.dir / "manifest.json"
         self.obs_path = self.dir / "observations.json"
         self.meta = meta
-        self.n_chunks = n_chunks
+        self.spans = [{"first_id": c["first_id"], "last_id": c["last_id"],
+                       "n_messages": c["n_messages"]} for c in chunks]
+        self.n_chunks = len(chunks)
         self.restarted = False               # True when a prior run's config didn't match
+        self.carried = 0                     # done chunks carried over from the prior run
         self.manifest = self._load_or_init()
 
     def _config(self):
@@ -44,28 +47,31 @@ class RunStore:
     def _fresh_manifest(self):
         return {"config": self._config(),
                 "chunks": [{"index": i, "status": "pending", "count": 0,
-                            "first_id": None, "last_id": None, "n_messages": None, "error": None}
+                            **self.spans[i], "error": None}
                            for i in range(self.n_chunks)]}
 
     def _load_or_init(self):
-        # resume only if the on-disk run matches this config and chunk count;
-        # otherwise the chunking differs and old chunk files are meaningless, so
-        # they are cleared (and the restart surfaced via `self.restarted`).
+        # One mechanism covers both resume and grown data: a done chunk from the
+        # prior run is carried over iff it covers exactly the same message span at
+        # the same index. When new messages arrive, the chunking's prefix is
+        # unchanged, so old chunks carry and only the tail (re)runs. A config
+        # change invalidates everything (surfaced via `self.restarted`).
         if self.manifest_path.exists():
             m = json.loads(self.manifest_path.read_text())
-            if m.get("config") == self._config() and len(m.get("chunks", [])) == self.n_chunks:
-                return m
+            if m.get("config") == self._config():
+                fresh = self._fresh_manifest()
+                old = m.get("chunks", [])
+                for i, e in enumerate(fresh["chunks"]):
+                    if (i < len(old) and old[i].get("status") == "done"
+                            and all(old[i].get(k) == e[k]
+                                    for k in ("first_id", "last_id", "n_messages"))):
+                        fresh["chunks"][i] = old[i]
+                        self.carried += 1
+                return fresh
             self.restarted = True
             shutil.rmtree(self.chunks_dir, ignore_errors=True)
             shutil.rmtree(self.traces_dir, ignore_errors=True)
         return self._fresh_manifest()
-
-    def set_spans(self, chunks):
-        """Record the row-id span each chunk covers (for status/inspection)."""
-        for i, c in enumerate(chunks):
-            e = self.manifest["chunks"][i]
-            e["first_id"], e["last_id"], e["n_messages"] = c["first_id"], c["last_id"], c["n_messages"]
-        self._save()
 
     def done_count(self):
         return sum(e["status"] == "done" for e in self.manifest["chunks"])
