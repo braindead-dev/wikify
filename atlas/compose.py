@@ -76,6 +76,24 @@ def route_schema(page_ids) -> dict:
     }
 
 
+def review_schema(page_ids) -> dict:
+    ids = {"type": "string", "enum": list(page_ids)}
+    return {
+        "type": "object", "additionalProperties": False, "required": ["merges", "deletes"],
+        "properties": {
+            "merges": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False, "required": ["keep", "absorb"],
+                "properties": {
+                    "keep": {**ids, "description": "the page that stays"},
+                    "absorb": {"type": "array", "items": ids, "minItems": 1,
+                               "description": "duplicate pages folded into it"},
+                }}},
+            "deletes": {"type": "array", "items": ids,
+                        "description": "pages that should not exist at all"},
+        },
+    }
+
+
 ARTICLE_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["article"],
     "properties": {"article": {"type": "string",
@@ -137,8 +155,31 @@ def clean_citations(text, allowed) -> str:
 
 
 def clean_links(text, page_ids) -> str:
-    """Turn [[id]] links to nonexistent pages into plain text."""
-    return _LINK_RE.sub(lambda m: m.group(0) if m.group(1) in page_ids else m.group(1), text)
+    """Normalize [[id]] / [[id|label]] links; links to nonexistent pages become
+    plain text."""
+    def fix(m):
+        pid, _, label = m.group(1).partition("|")
+        if pid in page_ids:
+            return m.group(0)
+        return label or pid
+    return _LINK_RE.sub(fix, text)
+
+
+_UESC_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def polish(article, allowed, page_ids) -> str:
+    """Deterministic cleanup of writer output: decode stray \\uXXXX escapes,
+    validate citations and links, drop a leading H1 (the frontmatter carries the
+    title), and collapse whitespace left behind by stripped citations."""
+    article = _UESC_RE.sub(lambda m: chr(int(m.group(1), 16)), article)
+    article = clean_links(clean_citations(article, allowed), page_ids)
+    lines = article.strip().split("\n")
+    if lines and lines[0].lstrip().startswith("# "):
+        lines = lines[1:]
+    article = "\n".join(lines).strip()
+    article = re.sub(r"[ \t]+([.,;:!?])", r"\1", article)
+    return re.sub(r"[ \t]{2,}", " ", article)
 
 
 # ---------------------------------------------------------------- stages
@@ -160,6 +201,42 @@ def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
     return pages
 
 
+def review_plan(llm, state, workspace, cfg, trace) -> int:
+    """One pass over the tree itself: merge duplicate pages, delete pages that
+    shouldn't exist (junk subjects, fragments of one thing split across pages).
+    Applied before routing, so absorbed pages never receive observations."""
+    system = ("You review the page tree of a wiki about a group chat, as its editor. "
+              "Find (1) DUPLICATES: pages that are the same subject under different "
+              "names or split across type (merge into the best one — the absorbed "
+              "page's aliases carry over), and fragments of one subject spread over "
+              "several pages when one richer page would serve a reader better; "
+              "(2) JUNK: pages that are not real subjects (a stray word mistaken "
+              "for a person, a generic term with no group-specific meaning). "
+              "Be conservative: only act where you are confident. JSON only.\n\n"
+              + workspace)
+    user = "PAGE TREE:\n" + "\n".join(
+        f"- {pid} — {p['title']}" + (f" (aliases: {', '.join(p['aliases'])})" if p["aliases"] else "")
+        for pid, p in sorted(state["pages"].items()))
+    out = llm.complete_json(system, user, effort=cfg.effort,
+                            schema=review_schema(state["pages"]), schema_name="review",
+                            trace=trace, max_tokens=cfg.max_tokens, temperature=cfg.temperature)
+    changed = 0
+    for m in (out.get("merges") or []):
+        keep = m.get("keep")
+        for pid in (m.get("absorb") or []):
+            if pid != keep and pid in state["pages"] and keep in state["pages"]:
+                gone = state["pages"].pop(pid)
+                kept = state["pages"][keep]
+                kept["aliases"] = list(dict.fromkeys(
+                    kept["aliases"] + [gone["title"]] + gone["aliases"]))
+                changed += 1
+    for pid in (out.get("deletes") or []):
+        if pid in state["pages"]:
+            state["pages"].pop(pid)
+            changed += 1
+    return changed
+
+
 def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
     """batch: list of (key, obs). Returns {key: [page ids]} for every key."""
     system = (_prompt("route.md").replace("{workspace}", workspace)
@@ -179,14 +256,26 @@ def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
     return routed
 
 
-def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, cfg, trace) -> str:
-    page = state["pages"][pid]
+def _material(page, keyed, by_id, quotes_per_obs):
     material, allowed = [], set()
     for n, key in enumerate(page["obs"]):
         o = keyed[key]
         allowed.update(o["sources"])
         material.append(_obs_line(n, o) + " — " + o["detail"])
-        material.extend(_quotes(o, by_id, cfg.quotes_per_obs))
+        if quotes_per_obs:
+            material.extend(_quotes(o, by_id, quotes_per_obs))
+    return material, allowed
+
+
+def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, cfg, trace) -> str:
+    page = state["pages"][pid]
+    # a page with enormous material keeps every observation but sheds quotes
+    # until it fits the budget — the observations carry the facts, the quotes
+    # are enrichment.
+    for q in (cfg.quotes_per_obs, 2, 1, 0):
+        material, allowed = _material(page, keyed, by_id, q)
+        if sum(len(m) for m in material) // 4 <= cfg.material_budget:
+            break
     system = (_prompt("write.md").replace("{workspace}", workspace)
               + "\n\nPAGE TREE (for [[cross-links]]):\n" + _page_tree(state))
     user = (f"PAGE TO WRITE: {pid} — \"{page['title']}\" ({page['type']})"
@@ -202,8 +291,7 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, cfg, trace) -
     article = (out.get("article") or "").strip()
     if not article:
         raise ValueError("writer returned an empty article")
-    article = clean_links(clean_citations(article, allowed), set(state["pages"]))
-    return article
+    return polish(article, allowed, set(state["pages"]))
 
 
 def _page_path(wiki_dir: Path, pid: str) -> Path:
@@ -236,7 +324,7 @@ def rebuild_index(wiki_dir, state) -> None:
 
 # ---------------------------------------------------------------- pipeline
 def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=None,
-               verbose=True) -> dict:
+               only=None, verbose=True) -> dict:
     """Observations → wiki. Resumable at every level; init and update are the
     same call. Returns the final state."""
     cfg = config or ComposeConfig()
@@ -280,6 +368,12 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
             kinds = {t: sum(1 for p in state["pages"].values() if p["type"] == t)
                      for t in ("person", "topic", "event")}
             print(f"[plan] {len(state['pages'])} pages: {kinds}", flush=True)
+    if not state.get("reviewed"):
+        changed = review_plan(llm, state, workspace, cfg, sink("review"))
+        state["reviewed"] = True
+        _save_state(wiki_dir, state)
+        if verbose:
+            print(f"[review] merged/deleted {changed} pages → {len(state['pages'])} remain", flush=True)
     if stage == "plan":
         return state
 
@@ -319,7 +413,15 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
         return state
 
     # ---- WRITE
-    pending = [pid for pid, p in state["pages"].items() if p["status"] == "pending" and p["obs"]]
+    if only:                              # targeted (re)write of specific pages
+        pending = [pid for pid in only if pid in state["pages"] and state["pages"][pid]["obs"]]
+    else:
+        pending = [pid for pid, p in state["pages"].items()
+                   if p["status"] == "pending" and len(p["obs"]) >= cfg.min_obs]
+        thin = sum(1 for p in state["pages"].values()
+                   if p["status"] == "pending" and 0 < len(p["obs"]) < cfg.min_obs)
+        if thin and verbose:
+            print(f"[write] skipping {thin} thin pages (< {cfg.min_obs} observations)", flush=True)
     if limit_pages:
         pending = pending[:limit_pages]
     if pending:

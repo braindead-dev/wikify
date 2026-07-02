@@ -14,6 +14,8 @@ class ComposeConfig:
     max_tokens: int = 128_000            # output ceiling (also steers provider routing)
     route_batch: int = 500               # observations per routing call
     quotes_per_obs: int = 4              # original messages quoted under each observation
+    min_obs: int = 4                     # pages that attract fewer observations aren't written
+    material_budget: int = 400_000       # max tokens of material per page (quotes shed to fit)
     trace: bool = True                   # save each call's prompt+output (failures always saved)
 
 

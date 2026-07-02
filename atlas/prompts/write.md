@@ -32,11 +32,13 @@ Do not narrate events in order. Find what the material *means* and organize by i
 
 ## Craft
 
-- Open with a lead paragraph that states what/who this is and why it matters in
-  the group's world — a reader should understand the subject from the lead alone.
+- Start directly with the lead paragraph (do not repeat the title as a heading):
+  state what/who this is and why it matters in the group's world — a reader should
+  understand the subject from the lead alone.
 - Then `##` sections organized by THEME (for people) or ARC (for topics/events).
 - **Cite every claim** with the message ids you were given: `[#12345]` or
-  `[#12345, #12346]`. Use only ids present in your material.
+  `[#12345, #12346]`. Use only ids present in your material. List items need
+  citations too — an uncited bullet is a defect.
 - **Quote the group's actual voice** — the original messages are provided under
   each observation; short verbatim quotes make the article alive. Attribute
   exactly; never alter a quote.
@@ -48,7 +50,8 @@ Do not narrate events in order. Find what the material *means* and organize by i
   attribution over assertion ("X said" not "it was clear that"). No em dashes.
 - Depth over coverage: it is better to fully develop the page's real themes than
   to mention everything once. But nothing important may be lost — if a fact fits
-  no section, it belongs in a final `## Miscellany` section, still cited.
+  no section, it belongs in a final `## Miscellany` section, still cited. Material
+  that clearly belongs to a different subject entirely may simply be left out.
 
 ## When updating
 

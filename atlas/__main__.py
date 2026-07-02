@@ -68,8 +68,9 @@ def cmd_wiki(args):
     chat_dir = Path("chats") / args.slug
     if args.fresh:
         shutil.rmtree(chat_dir / "wiki", ignore_errors=True)
+    only = args.only.replace(",", " ").split() if args.only else None
     build_wiki(chat_dir, _config_from(args, ComposeConfig),
-               stage=args.stage, limit_pages=args.pages)
+               stage=args.stage, limit_pages=args.pages, only=only)
 
 
 def main(argv=None):
@@ -92,6 +93,7 @@ def main(argv=None):
     w.add_argument("--stage", choices=["plan", "route", "all"], default="all",
                    help="stop after this sublayer (for inspection)")
     w.add_argument("--pages", type=int, help="only write this many pages (for trying things out)")
+    w.add_argument("--only", help="comma-separated page ids to (re)write, e.g. person/alice")
     _config_flags(w, ComposeConfig)
     w.set_defaults(fn=cmd_wiki)
 
