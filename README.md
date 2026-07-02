@@ -5,19 +5,26 @@ Two tools over your local iMessage history:
 - **`imessage`** — read and export your chats faithfully, as a **CLI** or **SDK**
   (this README). Stdlib only — nothing to install.
 - **`atlas`** — build a cited, Wikipedia-style knowledge base over a conversation.
-  A layered pipeline: it first extracts granular, cited observations from the chat
-  (Layer 1), then composes them into articles. Needs an OpenRouter key in `.env`.
+  A layered pipeline. Needs an OpenRouter key in `.env`.
 
   ```bash
-  python3 -m atlas my-chat --chats 101,102   # first run (ids from `imsg chats`)
-  python3 -m atlas my-chat                   # later: resume / retry failed chunks
+  python3 -m atlas extract my-chat --chats 101,102   # L1: chat → observations
+  python3 -m atlas wiki my-chat                      # L2: observations → wiki pages
   ```
 
-  Every chunk runs in parallel and streams to `chats/<slug>/` as it finishes:
-  `observations.json` (the output, in chunk order), `manifest.json` (per-chunk
-  status), `chunks/` (streamed results), `traces/` (each call's exact prompt,
-  raw output, provider, timing). Any config knob is a flag (`--chunk-tokens`,
-  `--effort`, `--model`, …).
+  **Layer 1 (extract)** mines the chat in parallel chunks into granular, cited
+  observations — events, traits, jokes, slang, voice — each backed by message ids.
+  **Layer 2 (wiki)** plans the page tree in one holistic pass, routes every
+  observation to its page(s), and writes deep articles in parallel (each writer
+  gets its observations plus the original quoted messages). Person pages are
+  portraits; topic pages trace a joke from origin to evolution; event pages
+  reconstruct what happened.
+
+  Both layers stream to `chats/<slug>/` as they run, are resumable after any
+  interruption, retry failures, and keep full request/response traces. Re-running
+  is incremental: new messages extract as new chunks, route into the existing
+  tree, and rewrite only the pages they touch — `wiki is up to date` costs zero
+  calls. Any config knob is a flag (`--chunk-tokens`, `--model`, `--only`, …).
 
 ## imessage
 

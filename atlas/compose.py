@@ -165,14 +165,24 @@ def clean_links(text, page_ids) -> str:
     return _LINK_RE.sub(fix, text)
 
 
+_UPAIR_RE = re.compile(r"\\u(d[89ab][0-9a-fA-F]{2})\\u(d[c-fC-F][0-9a-fA-F]{2})", re.I)
 _UESC_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _unescape(text) -> str:
+    """Decode literal \\uXXXX escapes the model left in the text — surrogate
+    pairs (emoji) first, then singles; any lone surrogate left over is dropped."""
+    text = _UPAIR_RE.sub(lambda m: chr(0x10000 + (int(m.group(1), 16) - 0xD800) * 0x400
+                                       + int(m.group(2), 16) - 0xDC00), text)
+    text = _UESC_RE.sub(lambda m: chr(int(m.group(1), 16)), text)
+    return "".join(c for c in text if not 0xD800 <= ord(c) <= 0xDFFF)
 
 
 def polish(article, allowed, page_ids) -> str:
     """Deterministic cleanup of writer output: decode stray \\uXXXX escapes,
     validate citations and links, drop a leading H1 (the frontmatter carries the
     title), and collapse whitespace left behind by stripped citations."""
-    article = _UESC_RE.sub(lambda m: chr(int(m.group(1), 16)), article)
+    article = _unescape(article)
     article = clean_links(clean_citations(article, allowed), page_ids)
     lines = article.strip().split("\n")
     if lines and lines[0].lstrip().startswith("# "):
@@ -261,7 +271,10 @@ def _material(page, keyed, by_id, quotes_per_obs):
     for n, key in enumerate(page["obs"]):
         o = keyed[key]
         allowed.update(o["sources"])
-        material.append(_obs_line(n, o) + " — " + o["detail"])
+        # source ids ride on the line itself, so the writer can cite every claim
+        # even when quotes are shed for budget
+        cites = ", ".join(f"#{s}" for s in o["sources"][:6])
+        material.append(_obs_line(n, o) + " — " + o["detail"] + f" [{cites}]")
         if quotes_per_obs:
             material.extend(_quotes(o, by_id, quotes_per_obs))
     return material, allowed
