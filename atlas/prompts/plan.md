@@ -16,9 +16,13 @@ the wiki should have. You are not writing articles; you are deciding what exists
 ## Page types
 
 - **person** — exactly ONE page per real human. Chat labels, nicknames, and name
-  variants for the same human belong to one page; list them in `aliases`. Include
-  every group member, and an outside person only if they recur enough to have a
-  real presence in the group's world.
+  variants for the same human belong to one page; list them in `aliases`. Title
+  the page with the person's fullest known real name, as an encyclopedia would
+  (e.g. "Alice Johnson", not "AJ"); nicknames live in aliases and the article
+  lead. Include every group member, and an outside person only if they recur
+  enough to have a real presence in the group's world. Watch for the same human
+  appearing under unrelated-looking labels (a nickname and a real name); when the
+  evidence says they are one person, make one page.
 - **topic** — a recurring thing: an inside joke or bit, a coined word or piece of
   slang, a shared obsession (a game, a show, a scheme), a group dynamic or rivalry,
   a place they keep returning to. One page per distinct thing, at the granularity a

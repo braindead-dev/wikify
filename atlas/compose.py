@@ -94,11 +94,33 @@ def review_schema(page_ids) -> dict:
     }
 
 
-ARTICLE_SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["article"],
-    "properties": {"article": {"type": "string",
-                               "description": "the full markdown article body, no frontmatter"}},
+# Normalized biography fields for person infoboxes — filled from the material,
+# empty string where the material doesn't say.
+PERSON_FACTS = {
+    "full_name": "the person's full real name",
+    "born": "birthday / age information, as stated in the material",
+    "hometown": "where they are from or live",
+    "education": "school and field of study",
+    "occupation": "job(s) or roles, comma-separated",
+    "relationship": "relationship status or partner, as of the latest material",
+    "family": "family members who appear in the material",
 }
+
+
+def article_schema(person=False) -> dict:
+    props = {"article": {"type": "string",
+                         "description": "the full markdown article body, no frontmatter"}}
+    required = ["article"]
+    if person:
+        props["facts"] = {
+            "type": "object", "additionalProperties": False,
+            "required": list(PERSON_FACTS),
+            "properties": {k: {"type": "string", "description": v + "; empty if unknown"}
+                           for k, v in PERSON_FACTS.items()},
+        }
+        required.append("facts")
+    return {"type": "object", "additionalProperties": False,
+            "required": required, "properties": props}
 
 
 # ---------------------------------------------------------------- state
@@ -149,7 +171,8 @@ _LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 def clean_citations(text, allowed) -> str:
     """Keep only citations whose ids were actually in the writer's material."""
     def fix(match):
-        ids = [i for i in re.findall(r"\d+", match.group(0)) if int(i) in allowed]
+        ids = [i for i in dict.fromkeys(re.findall(r"\d+", match.group(0)))
+               if int(i) in allowed]
         return "[" + ", ".join(f"#{i}" for i in ids) + "]" if ids else ""
     return _CITE_RE.sub(fix, text)
 
@@ -304,6 +327,23 @@ def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
     return routed
 
 
+def origins_table(state, keyed, by_id) -> str:
+    """Deterministic ground truth for attribution: for every topic and event, the
+    earliest recorded message among its routed observations. Injected into every
+    writer so no two pages disagree about who said something first."""
+    rows = []
+    for pid, p in sorted(state["pages"].items()):
+        if p["type"] == "person" or not p["obs"]:
+            continue
+        first = min((by_id[s] for k in p["obs"] for s in keyed[k]["sources"] if s in by_id),
+                    key=lambda m: m.ts, default=None)
+        if first is not None:
+            text = (first.text or "").replace("\n", " ")[:70]
+            rows.append(f'- {pid} "{p["title"]}": first recorded {first.ts:%Y-%m-%d} '
+                        f'by {first.sender}: "{text}"')
+    return "\n".join(rows)
+
+
 def _material(page, keyed, by_id, quotes_per_obs):
     material, allowed = [], set()
     for n, key in enumerate(page["obs"]):
@@ -318,8 +358,12 @@ def _material(page, keyed, by_id, quotes_per_obs):
     return material, allowed
 
 
-def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, cfg, trace) -> str:
+def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg, trace,
+               fresh=False):
+    """Returns (article, facts) — facts only for person pages. `fresh` ignores the
+    existing article (a directed rewrite under current rules, not a revision)."""
     page = state["pages"][pid]
+    person = page["type"] == "person"
     # a page with enormous material keeps every observation but sheds quotes
     # until it fits the budget — the observations carry the facts, the quotes
     # are enrichment.
@@ -331,31 +375,44 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, cfg, trace) -
               + "\n\nPAGE TREE (for [[cross-links]]):\n" + _page_tree(state))
     user = (f"PAGE TO WRITE: {pid} — \"{page['title']}\" ({page['type']})"
             + (f" · aliases: {', '.join(page['aliases'])}" if page.get("aliases") else ""))
+    if origins:
+        user += "\n\nCANONICAL ORIGINS (earliest recorded uses — never contradict):\n" + origins
     existing = _page_path(wiki_dir, pid)
-    if existing.exists():
+    if existing.exists() and not fresh:
         body = existing.read_text().split("---", 2)[-1].strip()
         user += f"\n\nEXISTING ARTICLE (revise with the new material):\n{body}"
     user += "\n\nMATERIAL (observations with original messages):\n" + "\n".join(material)
-    out = llm.complete_json(system, user, effort=cfg.effort, schema=ARTICLE_SCHEMA,
+    out = llm.complete_json(system, user, effort=cfg.effort, schema=article_schema(person),
                             schema_name="article", trace=trace, max_tokens=cfg.max_tokens,
                             temperature=cfg.temperature)
     article = (out.get("article") or "").strip()
     if not article:
         raise ValueError("writer returned an empty article")
-    return polish(article, allowed, set(state["pages"]))
+    facts = {k: v.strip() for k, v in (out.get("facts") or {}).items() if v and v.strip()}
+    if cfg.edit_obs and len(page["obs"]) >= cfg.edit_obs:
+        # large pages draw on heavily duplicated material — one editing pass
+        # merges the repeats the writer let through.
+        edited = llm.complete_json(_prompt("edit.md"), article, effort=cfg.effort,
+                                   schema=article_schema(False), schema_name="article",
+                                   trace=trace, max_tokens=cfg.max_tokens,
+                                   temperature=cfg.temperature)
+        article = (edited.get("article") or "").strip() or article
+    return polish(article, allowed, set(state["pages"])), facts
 
 
 def _page_path(wiki_dir: Path, pid: str) -> Path:
     return wiki_dir / (pid + ".md")
 
 
-def _write_page_file(wiki_dir, pid, page, article) -> None:
+def _write_page_file(wiki_dir, pid, page, article, facts=None) -> None:
     path = _page_path(wiki_dir, pid)
     path.parent.mkdir(parents=True, exist_ok=True)
     aliases = json.dumps(page.get("aliases", []), ensure_ascii=False)
     front = (f"---\nid: {pid}\ntitle: {page['title']}\ntype: {page['type']}\n"
-             f"aliases: {aliases}\nobservations: {len(page['obs'])}\n"
-             f"updated: {time.strftime('%Y-%m-%d')}\n---\n\n")
+             f"aliases: {aliases}\nobservations: {len(page['obs'])}\n")
+    if facts:
+        front += f"facts: {json.dumps(facts, ensure_ascii=False)}\n"
+    front += f"updated: {time.strftime('%Y-%m-%d')}\n---\n\n"
     tmp = path.with_suffix(".md.tmp")
     tmp.write_text(front + article + "\n")
     tmp.replace(path)
@@ -496,19 +553,22 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
     if limit_pages:
         pending = pending[:limit_pages]
     if pending:
+        origins = origins_table(state, keyed, by_id)
         workers = cfg.workers or len(pending)
         if verbose:
             print(f"[write] {len(pending)} pages · x{workers}", flush=True)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(write_page, llm, pid, state, keyed, by_id, workspace,
-                                   wiki_dir, cfg, sink("write-" + pid.replace("/", "-"))): pid
+                                   wiki_dir, origins, cfg,
+                                   sink("write-" + pid.replace("/", "-")),
+                                   fresh=bool(only)): pid
                        for pid in pending}
             done = 0
             for fut in as_completed(futures):
                 pid = futures[fut]
                 try:
-                    article = fut.result()
-                    _write_page_file(wiki_dir, pid, state["pages"][pid], article)
+                    article, facts = fut.result()
+                    _write_page_file(wiki_dir, pid, state["pages"][pid], article, facts)
                     state["pages"][pid]["status"] = "written"
                     _save_state(wiki_dir, state)
                 except Exception as e:

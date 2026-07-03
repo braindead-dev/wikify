@@ -193,11 +193,23 @@ def _references(page):
     return "<h2>References</h2><ol class=\"references\">" + "".join(items) + "</ol>"
 
 
+_FACT_LABELS = [("full_name", "Full name"), ("born", "Born"), ("hometown", "Hometown"),
+                ("education", "Education"), ("occupation", "Occupation"),
+                ("relationship", "Partner"), ("family", "Family")]
+
+
 def _infobox(pid, meta, page, tree):
     rows = [("Type", meta.get("type", "")),]
     aliases = [a for a in meta.get("aliases", []) if a and a != meta.get("title")]
     if aliases:
         rows.append(("Also known as", ", ".join(dict.fromkeys(aliases))))
+    try:
+        facts = json.loads(meta.get("facts", "{}"))
+    except json.JSONDecodeError:
+        facts = {}
+    for key, label in _FACT_LABELS:
+        if facts.get(key) and facts[key] != meta.get("title"):
+            rows.append((label, facts[key]))
     if meta.get("observations"):
         rows.append(("Observations", meta["observations"]))
     times = sorted(page.by_id[r].ts for r in page.refs if r in page.by_id)

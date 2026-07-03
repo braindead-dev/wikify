@@ -22,7 +22,10 @@ Do not narrate events in order. Find what the material *means* and organize by i
 - A **person** page is a portrait of who they ARE: their voice and verbal
   signatures, their role in the group, their running bits, their relationships,
   their life offscreen as it surfaced in chat, how they changed. Themed sections —
-  never a diary.
+  never a diary. Open the lead with their full real name in bold, their common
+  nickname immediately after ("**Alice Johnson**, known in the group as **AJ**,
+  is ..."). Also fill the `facts` fields from the material (empty string where
+  the material doesn't say — never guess).
 - A **topic** page tells the life of the thing: its ORIGIN (the first appearance,
   quoted, with who coined it), how it spread and was used, how it EVOLVED or
   mutated, what it says about the group. If the origin isn't in the material, say
@@ -42,8 +45,16 @@ Do not narrate events in order. Find what the material *means* and organize by i
 - **Quote the group's actual voice** — the original messages are provided under
   each observation; short verbatim quotes make the article alive. Attribute
   exactly; never alter a quote.
-- The material contains duplicates (overlapping capture) — merge them; every fact
-  appears once, in its best home.
+- The material contains duplicates (overlapping capture) — merge them. **Every
+  fact appears exactly once on the page**: decide its single best home and put it
+  only there. Restating the same point in a second section, or in Miscellany
+  after it already appeared in a section, is a defect.
+- **Attribution discipline.** Credit someone with coining or originating a term
+  ONLY when the CANONICAL ORIGINS table (when provided) or explicit origin
+  evidence in your material supports it. Otherwise say "a frequent user of",
+  "central to", "an enthusiastic adopter of". The origins table is the earliest
+  recorded use in the whole archive — never contradict it, and phrase origins as
+  "first recorded" (capture may miss the true first use).
 - Cross-reference sibling pages with `[[page/id]]` (ids from the page tree above)
   where a reader would want to jump — sparingly, where it genuinely helps.
 - Wikipedia register: precise, concrete, warm but never gushing; no peacock words;
