@@ -67,6 +67,15 @@ def cmd_extract(args):
 
 def cmd_wiki(args):
     chat_dir = Path("chats") / args.slug
+    if args.questions:
+        path = chat_dir / "wiki" / "questions.json"
+        open_qs = [q for q in (json.loads(path.read_text()) if path.exists() else [])
+                   if not q.get("applied") and not str(q.get("answer", "")).strip()]
+        for q in open_qs:
+            print(f"[{q['kind']}] {q['question']}\n  subjects: {q['subjects']}\n"
+                  f"  evidence: {q['evidence']}\n")
+        print(f"{len(open_qs)} open — answer by setting \"answer\": \"yes\"/\"no\" in {path}")
+        return
     if args.audit:
         audit_pages(chat_dir, _config_from(args, ComposeConfig))
         return
@@ -100,6 +109,8 @@ def main(argv=None):
     w.add_argument("--only", help="comma-separated page ids to (re)write, e.g. person/alice")
     w.add_argument("--audit", action="store_true",
                    help="judge every page against its cited messages; flag pages for revision")
+    w.add_argument("--questions", action="store_true",
+                   help="show open questions for the owner (answer in wiki/questions.json)")
     _config_flags(w, ComposeConfig)
     w.set_defaults(fn=cmd_wiki)
 

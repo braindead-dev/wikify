@@ -526,6 +526,91 @@ def rebuild_index(wiki_dir, state) -> None:
     (wiki_dir / "index.md").write_text("\n".join(parts) + "\n")
 
 
+# ---------------------------------------------------------------- questions
+def questions_schema(page_ids) -> dict:
+    ids = {"type": "string", "enum": list(page_ids)}
+    return {
+        "type": "object", "additionalProperties": False, "required": ["questions"],
+        "properties": {"questions": {"type": "array", "maxItems": 8, "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["question", "kind", "subjects", "evidence"],
+            "properties": {
+                "question": {"type": "string", "description": "a yes/no question for the owner"},
+                "kind": {"type": "string", "enum": ["same_person", "merge_pages"]},
+                "subjects": {"type": "array", "minItems": 2, "maxItems": 2, "items": ids,
+                             "description": "[keep, absorb] if the answer is yes"},
+                "evidence": {"type": "string", "description": "why you suspect it"},
+            }}}},
+    }
+
+
+def merge_pages(state, wiki_dir, keep, absorb) -> None:
+    """Fold one page into another: union aliases and material, re-point routing,
+    delete the absorbed page's file, and mark the keeper for rewrite."""
+    gone = state["pages"].pop(absorb)
+    kept = state["pages"][keep]
+    kept["aliases"] = list(dict.fromkeys(kept["aliases"] + [gone["title"]] + gone["aliases"]))
+    kept["obs"] = list(dict.fromkeys(kept["obs"] + gone["obs"]))
+    kept["status"] = "pending"
+    for key, pages in state["routed"].items():
+        if absorb in pages:
+            state["routed"][key] = list(dict.fromkeys(
+                [keep if p == absorb else p for p in pages]))
+    _page_path(wiki_dir, absorb).unlink(missing_ok=True)
+
+
+def ask_questions(llm, state, wiki_dir, workspace, cfg, trace, verbose=True) -> None:
+    """The human-feedback channel. Suspected same-person pairs and dubious page
+    splits become questions in wiki/questions.json; the owner fills in `answer`
+    ("yes"/"no"), and `apply_answers` reconciles on the next build."""
+    path = wiki_dir / "questions.json"
+    existing = json.loads(path.read_text()) if path.exists() else []
+    asked = {tuple(sorted(q["subjects"])) for q in existing}
+    system = ("You maintain a wiki about a group chat. Look at the page tree and flag "
+              "UNCERTAIN identity or structure questions worth asking the chat's owner: "
+              "two person pages that might be the same human (a nickname and a name, "
+              "similar labels, an outside name that matches a member), or two pages that "
+              "might be one subject. Only genuinely uncertain, consequential cases — "
+              "not things the tree already resolves via aliases. JSON only.\n\n" + workspace)
+    out = llm.complete_json(system, "PAGE TREE:\n" + _page_tree(state), effort=cfg.effort,
+                            schema=questions_schema(state["pages"]), schema_name="questions",
+                            trace=trace, max_tokens=cfg.max_tokens, temperature=cfg.temperature)
+    added = 0
+    for q in (out.get("questions") or []):
+        subjects = tuple(sorted(q.get("subjects", [])))
+        if len(subjects) == 2 and subjects not in asked:
+            existing.append({**q, "answer": ""})
+            asked.add(subjects)
+            added += 1
+    if added or not path.exists():
+        _atomic_write(path, existing)
+    if verbose and added:
+        print(f"[questions] {added} new questions → {path} (fill in \"answer\": yes/no)",
+              flush=True)
+
+
+def apply_answers(state, wiki_dir, verbose=True) -> int:
+    path = wiki_dir / "questions.json"
+    if not path.exists():
+        return 0
+    questions = json.loads(path.read_text())
+    applied = 0
+    for q in questions:
+        answer = str(q.get("answer", "")).strip().lower()
+        if q.get("applied") or not answer:
+            continue
+        if answer in ("yes", "y") and q["kind"] in ("same_person", "merge_pages"):
+            keep, absorb = q["subjects"]
+            if keep in state["pages"] and absorb in state["pages"]:
+                merge_pages(state, wiki_dir, keep, absorb)
+                applied += 1
+                if verbose:
+                    print(f"[questions] merged {absorb} → {keep}", flush=True)
+        q["applied"] = True
+    _atomic_write(path, questions)
+    return applied
+
+
 # ---------------------------------------------------------------- audit
 AUDIT_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["verdict", "issues"],
@@ -644,6 +729,8 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
 
     llm = LLMClient(cfg.model)
     t0 = time.time()
+    if apply_answers(state, wiki_dir, verbose):
+        _save_state(wiki_dir, state)
 
     def sink(name):
         def _t(rec):
@@ -793,6 +880,8 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
                     _save_state(wiki_dir, state)
                 except Exception as e:
                     print(f"\n  {pid} failed — {str(e)[:80]}", flush=True)
+
+    ask_questions(llm, state, wiki_dir, workspace, cfg, sink("questions"), verbose)
 
     rebuild_index(wiki_dir, state)
     if verbose:
