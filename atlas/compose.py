@@ -1,16 +1,26 @@
 """Layer 2 — compose the wiki from Layer 1 observations.
 
-Three sublayers, the same architecture that made extraction reliable (one holistic
-pass, then parallel everything, durable resumable state, full traces):
+The same architecture that made extraction reliable — holistic passes where
+holism matters, parallel everything else, durable resumable state, full traces:
 
-  PLAN   one pass over every observation title → the complete page tree
-  ROUTE  parallel batches: each observation → the page(s) it belongs on
-  WRITE  parallel per page: observations + original quoted messages → the article
+  PLAN      one pass over every observation title → the complete page tree
+  REVIEW    one pass over the tree itself → merge duplicates, delete junk
+  ROUTE     parallel batches: each observation → the page(s) it belongs on
+  WRITE     parallel per page: observations + original quoted messages + the
+            canonical-origins table → the article (person pages also emit bio
+            facts; a draft that measurably repeats itself gets an edit pass)
+  ANALYSES  essays written FROM the finished entity pages — derived views that
+            regenerate whenever a source page changes
+  QUESTIONS uncertainties for the owner → wiki/questions.json; answers reconcile
+            (page merges) at the start of the next build
 
-`wiki/plan.json` is the durable state: the tree, the full observation→page routing,
-and per-page status. Init and update are the same pipeline — a re-run routes only
-observations it hasn't seen and rewrites only the pages they touch (passing each
-writer the existing article to revise).
+Separately, `audit_pages` judges every written page against its own cited
+messages and marks failing pages pending with the findings attached, so the next
+build revises them with the problems in hand.
+
+`wiki/plan.json` is the durable state: the tree, the full observation→page
+routing, and per-page status. Init and update are the same pipeline — a re-run
+routes only observations it hasn't seen and rewrites only the pages they touch.
 """
 from __future__ import annotations
 
@@ -351,6 +361,18 @@ def origins_table(state, keyed, by_id) -> str:
     return "\n".join(rows)
 
 
+def _repeats_itself(article, shingle=6, threshold=3) -> bool:
+    """Deterministic redundancy check: does the draft repeat the same run of
+    `shingle` words more than incidentally? This measures the defect itself, so
+    the edit pass runs exactly when it has something to fix."""
+    words = re.sub(r"\[#[^\]]*\]|[^a-z0-9 ]", "", article.lower()).split()
+    shingles = [" ".join(words[i:i + shingle]) for i in range(len(words) - shingle)]
+    counts = {}
+    for s in shingles:
+        counts[s] = counts.get(s, 0) + 1
+    return sum(1 for c in counts.values() if c > 1) >= threshold
+
+
 def _material(page, keyed, by_id, quotes_per_obs):
     material, allowed = [], set()
     for n, key in enumerate(page["obs"]):
@@ -399,8 +421,8 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg,
     if not article:
         raise ValueError("writer returned an empty article")
     facts = {k: v.strip() for k, v in (out.get("facts") or {}).items() if v and v.strip()}
-    if cfg.edit_obs and len(page["obs"]) >= cfg.edit_obs:
-        # large pages draw on heavily duplicated material — one editing pass
+    if cfg.edit_pass and _repeats_itself(article):
+        # the draft measurably restates the same points — one editing pass
         # merges the repeats the writer let through.
         edited = llm.complete_json(_prompt("edit.md"), article, effort=cfg.effort,
                                    schema=article_schema(False), schema_name="article",

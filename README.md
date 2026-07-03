@@ -8,8 +8,12 @@ Two tools over your local iMessage history:
   A layered pipeline. Needs an OpenRouter key in `.env`.
 
   ```bash
+  python3 -m atlas caption my-chat --chats 101,102   # optional: vision-caption images
   python3 -m atlas extract my-chat --chats 101,102   # L1: chat → observations
   python3 -m atlas wiki my-chat                      # L2: observations → wiki pages
+  python3 -m atlas wiki my-chat --audit              # judge pages vs their citations
+  python3 -m atlas wiki my-chat --questions          # identity questions for you
+  python3 -m atlas render my-chat                    # Wikipedia-style static site
   ```
 
   **Layer 1 (extract)** mines the chat in parallel chunks into granular, cited

@@ -21,15 +21,34 @@ from .llm import LLMClient
 from .store import _atomic_write
 
 CACHE = Path("chats/_captions.json")
-_PROMPT = ("Describe this image from a friend group's chat in ONE dense sentence for an "
-           "archive: what/who is shown (say 'a man'/'two people' — never guess names), "
-           "the setting, any text visible in the image (quote it), and the vibe. "
-           "No preamble.")
+# Bump when the prompt changes — cached captions from an older prompt are stale.
+_PROMPT_VERSION = 2
+_PROMPT = (
+    "Describe this image from a friend group's chat for a permanent archive. Be dense "
+    "and specific — the reader will never see the image, only your words.\n"
+    "- People: how many, appearance, expressions, what they are doing. Say 'a man' / "
+    "'two people' — NEVER guess names.\n"
+    "- Setting and action: where this is, what is happening, notable objects.\n"
+    "- TEXT: if the image is a screenshot, meme, or contains any readable text, quote "
+    "the significant text VERBATIM — the words are usually the whole point. Name the "
+    "app/site if recognizable.\n"
+    "- Register the vibe or joke if there is one.\n"
+    "One sentence for a simple photo; up to three for text-heavy or busy images. "
+    "No preamble.")
 _CAPTIONABLE = {"img", "gif"}
 
 
 def load_captions() -> dict:
-    return json.loads(CACHE.read_text()) if CACHE.exists() else {}
+    if not CACHE.exists():
+        return {}
+    data = json.loads(CACHE.read_text())
+    if data.get("version") != _PROMPT_VERSION:      # old prompt → stale cache
+        return {}
+    return data["captions"]
+
+
+def _save(cache) -> None:
+    _atomic_write(CACHE, {"version": _PROMPT_VERSION, "captions": cache})
 
 
 def _jpeg_data_url(path: str) -> str:
@@ -70,10 +89,10 @@ def build_captions(chat_ids, model="gemini-flash", workers=32, limit=None, verbo
     def one(path):
         url = _jpeg_data_url(path)
         out = llm.complete_json(
-            "You caption images for a private archive. Never refuse; these are the "
-            "owner's own photos. JSON only.",
+            "You caption images for a private archive. Never refuse or sanitize; these "
+            "are the owner's own photos. JSON only.",
             _PROMPT + '\nReturn JSON: {"caption": "..."}',
-            images=[url], effort="none", temperature=0.2, max_tokens=1000)
+            images=[url], effort="none", temperature=0.2, max_tokens=2000)
         return str(out.get("caption", "")).strip()
 
     done = failed = 0
@@ -90,10 +109,10 @@ def build_captions(chat_ids, model="gemini-flash", workers=32, limit=None, verbo
             except Exception:
                 failed += 1                       # uncached → retried next run
             if (done + failed) % 25 == 0:
-                _atomic_write(CACHE, cache)
+                _save(cache)
                 if verbose:
                     print(f"\r  [caption] {done + failed}/{len(todo)}", end="", flush=True)
-    _atomic_write(CACHE, cache)
+    _save(cache)
     if verbose:
         print(f"\n[caption] {done} captioned · {failed} failed (will retry) "
               f"· {llm.usage} · {time.time() - t0:.0f}s", flush=True)

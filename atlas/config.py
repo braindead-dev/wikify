@@ -16,7 +16,7 @@ class ComposeConfig:
     quotes_per_obs: int = 4              # original messages quoted under each observation
     min_obs: int = 4                     # pages that attract fewer observations aren't written
     material_budget: int = 400_000       # max tokens of material per page (quotes shed to fit)
-    edit_obs: int = 100                  # pages with this many observations get a dedup edit pass (0 = off)
+    edit_pass: bool = True               # dedup-edit a draft when it measurably repeats itself
     trace: bool = True                   # save each call's prompt+output (failures always saved)
 
 
