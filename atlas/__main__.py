@@ -18,6 +18,7 @@ from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
+from .caption import build_captions
 from .compose import audit_pages, build_wiki
 from .config import ComposeConfig, ExtractConfig
 from .extract import build_observations
@@ -113,6 +114,15 @@ def main(argv=None):
                    help="show open questions for the owner (answer in wiki/questions.json)")
     _config_flags(w, ComposeConfig)
     w.set_defaults(fn=cmd_wiki)
+
+    c = sub.add_parser("caption", help="caption image attachments so extraction sees pictures")
+    c.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
+    c.add_argument("--chats", help="comma-separated chat row ids (defaults to the manifest's)")
+    c.add_argument("--model", default="gemini-flash")
+    c.add_argument("--workers", type=int, default=32)
+    c.add_argument("--limit", type=int, help="only caption this many (for trying things out)")
+    c.set_defaults(fn=lambda a: build_captions(
+        _chat_ids(a, Path("chats") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
 
     r = sub.add_parser("render", help="render the wiki as a Wikipedia-style static site")
     r.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")

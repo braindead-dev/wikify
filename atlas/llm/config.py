@@ -23,6 +23,7 @@ MODELS = {
                           "serve_via": ["StreamLake", "Fireworks"]},
     "deepseek-v4":       {"provider": "openrouter", "model": "deepseek/deepseek-v4",        "reasoning": "high"},
     "gpt-5":             {"provider": "openrouter", "model": "openai/gpt-5",                "reasoning": "medium"},
+    "gemini-flash":      {"provider": "openrouter", "model": "google/gemini-2.5-flash",     "reasoning": None},
     "claude-sonnet":     {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6", "reasoning": None},
 }
 

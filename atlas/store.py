@@ -35,7 +35,8 @@ class RunStore:
         self.obs_path = self.dir / "observations.json"
         self.meta = meta
         self.spans = [{"first_id": c["first_id"], "last_id": c["last_id"],
-                       "n_messages": c["n_messages"]} for c in chunks]
+                       "n_messages": c["n_messages"], "text_hash": c.get("text_hash")}
+                      for c in chunks]
         self.n_chunks = len(chunks)
         self.restarted = False               # True when a prior run's config didn't match
         self.carried = 0                     # done chunks carried over from the prior run
@@ -64,7 +65,7 @@ class RunStore:
                 for i, e in enumerate(fresh["chunks"]):
                     if (i < len(old) and old[i].get("status") == "done"
                             and all(old[i].get(k) == e[k]
-                                    for k in ("first_id", "last_id", "n_messages"))):
+                                    for k in ("first_id", "last_id", "n_messages", "text_hash"))):
                         fresh["chunks"][i] = old[i]
                         self.carried += 1
                 return fresh

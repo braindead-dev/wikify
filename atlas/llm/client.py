@@ -101,7 +101,8 @@ class LLMClient:
         self.usage = Usage()
 
     def complete_json(self, system: str, user: str, effort=None, schema=None,
-                      schema_name="output", trace=None, max_tokens=None, temperature=None):
+                      schema_name="output", trace=None, max_tokens=None, temperature=None,
+                      images=None):
         """Return parsed JSON from the model. When `schema` is given, use genuine
         structured outputs (response_format=json_schema, strict) so the model is
         constrained to the schema at decode time — not merely asked to emit JSON.
@@ -112,8 +113,12 @@ class LLMClient:
         exhaustion raises `LLMError` carrying the raw output and finish reason.
         If `trace` is given it is called with a full record of the request and
         outcome (model, params, exact prompt, raw output, finish reason)."""
+        content = user
+        if images:
+            content = ([{"type": "image_url", "image_url": {"url": u}} for u in images]
+                       + [{"type": "text", "text": user}])
         messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": user}]
+                    {"role": "user", "content": content}]
         eff = effort if effort is not None else self.effort
         extra = {}
         if eff is not None and str(eff).lower() in ("none", "off", "false"):

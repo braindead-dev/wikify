@@ -7,6 +7,7 @@ then streamed to disk chunk by chunk via `RunStore` — resumable and order-pres
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -15,6 +16,7 @@ from pathlib import Path
 from imessage import MessagesDB
 from imessage.render import format_message
 
+from .caption import load_captions
 from .config import ExtractConfig
 from .llm import LLMClient
 from .observation import Observation, observations_schema
@@ -31,11 +33,24 @@ def _participants(messages) -> list:
     return sorted({m.sender for m in messages if not m.system and m.sender})
 
 
-def chunk_messages(messages, chunk_tokens, overlap_tokens) -> list:
+def _render_line(m, captions) -> str:
+    """One transcript line; image placeholders become `[img: <caption>]` when the
+    attachment has been captioned."""
+    line = format_message(m, ids=True)
+    for tag, path in zip(m.attachments, m.attachment_paths):
+        caption = captions.get(path or "")
+        if caption:
+            line = line.replace(f"[{tag}]", f"[{tag}: {caption}]", 1)
+    return line
+
+
+def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None) -> list:
     """Split into ~chunk_tokens slices of ID-tagged lines, each overlapping the
     previous by ~overlap_tokens so a thread spanning a seam is seen whole. Each
-    chunk carries its text and the row-id span it covers."""
-    lines = [format_message(m, ids=True) for m in messages]
+    chunk carries its text, the row-id span it covers, and a content hash (so a
+    chunk whose rendering changed — e.g. newly captioned images — re-extracts)."""
+    captions = captions or {}
+    lines = [_render_line(m, captions) for m in messages]
     tks = [_toks(ln) for ln in lines]
     chunks, i, n = [], 0, len(lines)
     while i < n:
@@ -43,8 +58,10 @@ def chunk_messages(messages, chunk_tokens, overlap_tokens) -> list:
         while j < n and t < chunk_tokens:
             t += tks[j]
             j += 1
-        chunks.append({"text": "\n".join(lines[i:j]), "first_id": messages[i].rowid,
-                       "last_id": messages[j - 1].rowid, "n_messages": j - i})
+        text = "\n".join(lines[i:j])
+        chunks.append({"text": text, "first_id": messages[i].rowid,
+                       "last_id": messages[j - 1].rowid, "n_messages": j - i,
+                       "text_hash": hashlib.sha1(text.encode()).hexdigest()[:10]})
         if j >= n:
             break
         back, ov = j, 0
@@ -104,7 +121,7 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     participants = _participants(msgs)
     system = system_prompt(db, msgs)
     schema = observations_schema(participants)
-    chunks = chunk_messages(msgs, config.chunk_tokens, config.overlap_tokens)
+    chunks = chunk_messages(msgs, config.chunk_tokens, config.overlap_tokens, load_captions())
 
     meta = {"chat_ids": list(chat_ids), "model": config.model,
             "chunk_tokens": config.chunk_tokens, "overlap_tokens": config.overlap_tokens}

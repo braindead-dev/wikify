@@ -64,6 +64,7 @@ class Message:
     is_from_me: bool
     rowid: int = 0                                     # message ROWID (exact watermark)
     attachments: list = field(default_factory=list)   # e.g. ["img", "video"]
+    attachment_paths: list = field(default_factory=list)  # files on disk, same order
     reply_to: str | None = None                        # snippet of the parent
     edited: bool = False
     system: str | None = None                          # rename/add/remove/leave
@@ -248,12 +249,15 @@ class MessagesDB:
             params.append(after_id)
 
         attachments: dict = {}
-        for mid, mime in cur.execute(
-                f"SELECT maj.message_id, a.mime_type FROM attachment a "
+        attachment_paths: dict = {}
+        for mid, mime, filename in cur.execute(
+                f"SELECT maj.message_id, a.mime_type, a.filename FROM attachment a "
                 f"JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID "
                 f"JOIN chat_message_join cmj ON cmj.message_id = maj.message_id "
                 f"WHERE cmj.chat_id IN ({placeholders})", chat_ids):
             attachments.setdefault(mid, []).append(_attachment_tag(mime))
+            attachment_paths.setdefault(mid, []).append(
+                str(Path(filename).expanduser()) if filename else "")
 
         handle_value = {rid: value for rid, value
                         in cur.execute("SELECT ROWID, id FROM handle")}
@@ -311,7 +315,9 @@ class MessagesDB:
             if g and text:
                 snippet_by_guid[g] = text[:40]
             msg = Message(ts=_to_dt(date), sender=sender, text=text, is_from_me=bool(is_me),
-                          rowid=rid, attachments=tags, reply_to=_strip_associated_prefix(thread_guid),
+                          rowid=rid, attachments=tags,
+                          attachment_paths=attachment_paths.get(rid, []),
+                          reply_to=_strip_associated_prefix(thread_guid),
                           edited=bool(edited), system=system, guid=g)
             if g is not None:
                 index_by_guid[g] = len(messages)
