@@ -200,25 +200,41 @@ def _save_crops(state, cfg, verbose) -> None:
 
 
 def _sync_questions(state, wiki_dir: Path, verbose) -> None:
-    """Unnamed clusters become questions; answered questions become names."""
+    """Unnamed clusters become questions; answered questions become names.
+    Answers anchor to the images behind the question (not the face id), so they
+    stay correct even if a re-cluster renumbers the ids."""
     path = wiki_dir / "questions.json"
     questions = json.loads(path.read_text()) if path.exists() else []
+
+    def resolve(q):
+        anchors = set(q.get("anchors", []))
+        if anchors:
+            fid = max(state["faces"], default=None,
+                      key=lambda f: len(anchors & set(state["faces"][f]["paths"])))
+            if fid and anchors & set(state["faces"][fid]["paths"]):
+                return fid
+        return q["face_id"] if q["face_id"] in state["faces"] else None
+
     named = 0
     for q in questions:
         if q.get("kind") == "face" and not q.get("applied"):
             answer = str(q.get("answer", "")).strip()
-            if answer and q["face_id"] in state["faces"]:
-                state["faces"][q["face_id"]]["name"] = None if answer.lower() == "no" else answer
+            fid = resolve(q)
+            if answer and fid:
+                state["faces"][fid]["name"] = None if answer.lower() == "no" else answer
                 q["applied"] = True
                 named += 1
-    asked = {q.get("face_id") for q in questions if q.get("kind") == "face"}
+    asked = {frozenset(q.get("anchors", [q.get("face_id")])) for q in questions
+             if q.get("kind") == "face"}
     added = 0
     for fid, f in state["faces"].items():
-        if fid not in asked and not f.get("name"):
+        anchors = f["paths"][:4]
+        if not f.get("name") and not any(a & set(anchors) for a in asked):
             questions.append({
                 "question": f"Who is {fid}? ({f['count']} appearances — "
                             f"sample crops in {FACES_DIR / fid}/)",
-                "kind": "face", "face_id": fid, "evidence": "", "answer": ""})
+                "kind": "face", "face_id": fid, "anchors": anchors,
+                "evidence": "", "answer": ""})
             added += 1
     _atomic_write(path, questions)
     _atomic_write(STATE, state)
