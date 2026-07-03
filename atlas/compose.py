@@ -154,12 +154,17 @@ def _obs_line(n, o) -> str:
     return f"[{n}] ({o['type']}) {o['title']} · {people}"
 
 
+def msg_text(m) -> str:
+    """A message's displayable text — system events render as '* <event>'."""
+    return m.text or (f"* {m.system}" if m.system else "")
+
+
 def _quotes(o, by_id, limit) -> list:
     out = []
     for src in o["sources"][:limit]:
         m = by_id.get(src)
         if m is not None:
-            text = (m.text or "").replace("\n", " ")[:150]
+            text = msg_text(m).replace("\n", " ")[:150]
             out.append(f'    #{src} {m.sender} ({m.ts:%Y-%m-%d}): "{text}"')
     return out
 
@@ -479,8 +484,12 @@ def write_analysis(llm, pid, state, wiki_dir, workspace, cfg, trace) -> str:
         material.append(f"==== SOURCE PAGE [[{src}]] \"{state['pages'][src]['title']}\" ====\n{body}")
     system = (_prompt("analysis.md").replace("{workspace}", workspace)
               + "\n\nPAGE TREE (for [[cross-links]]):\n" + _page_tree(state))
-    user = (f"ESSAY TO WRITE: {pid} — \"{page['title']}\"\nANGLE: {page.get('brief', '')}\n\n"
-            + "\n\n".join(material))
+    user = f"ESSAY TO WRITE: {pid} — \"{page['title']}\"\nANGLE: {page.get('brief', '')}"
+    if page.get("audit_issues"):
+        user += ("\n\nAUDIT FINDINGS from the previous version — do not repeat these "
+                 "mistakes (cite only what the source pages actually support):\n- "
+                 + "\n- ".join(page["audit_issues"]))
+    user += "\n\n" + "\n\n".join(material)
     out = llm.complete_json(system, user, effort=cfg.effort, schema=article_schema(False),
                             schema_name="article", trace=trace, max_tokens=cfg.max_tokens,
                             temperature=cfg.temperature)
@@ -550,11 +559,12 @@ def audit_pages(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
 
     def one(pid):
         body = _page_body(wiki_dir, pid)
-        ids = [int(i) for i in dict.fromkeys(re.findall(r"\[#(\d+)", body))][:30]
+        ids = [int(i) for i in dict.fromkeys(re.findall(r"\[#(\d+)", body))][:150]
         cited = "\n".join(
-            f'#{i} {by_id[i].sender} ({by_id[i].ts:%Y-%m-%d}): "{(by_id[i].text or "")[:160]}"'
+            f'#{i} {by_id[i].sender} ({by_id[i].ts:%Y-%m-%d}): "{msg_text(by_id[i])[:400]}"'
             for i in ids if i in by_id)
-        user = f"ARTICLE ({pid}):\n{body}\n\nCITED MESSAGES (sample):\n{cited}"
+        user = (f"ARTICLE ({pid}):\n{body}\n\nCITED MESSAGES (all shown, in article "
+                f"order; judge only claims whose citations are all here):\n{cited}")
         out = llm.complete_json(_prompt("audit.md"), user, effort=cfg.effort,
                                 schema=AUDIT_SCHEMA, schema_name="audit",
                                 temperature=cfg.temperature, trace=None,
@@ -764,7 +774,7 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
                 continue
             path = _page_path(wiki_dir, pid)
             srcs = [_page_path(wiki_dir, s) for s in p["sources"]]
-            if (not path.exists()
+            if (not path.exists() or p.get("status") == "pending"
                     or any(s.exists() and s.stat().st_mtime > path.stat().st_mtime for s in srcs)):
                 stale.append(pid)
     if stale:
@@ -779,6 +789,7 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
                 try:
                     _write_page_file(wiki_dir, pid, state["pages"][pid], fut.result())
                     state["pages"][pid]["status"] = "written"
+                    state["pages"][pid].pop("audit_issues", None)
                     _save_state(wiki_dir, state)
                 except Exception as e:
                     print(f"\n  {pid} failed — {str(e)[:80]}", flush=True)

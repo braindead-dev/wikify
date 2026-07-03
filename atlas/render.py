@@ -23,6 +23,8 @@ from pathlib import Path
 
 from imessage import MessagesDB
 
+from .compose import msg_text
+
 CSS = """
 *{box-sizing:border-box}
 body{margin:0;font-family:sans-serif;font-size:14px;line-height:1.6;color:#202122;background:#f8f9fa}
@@ -99,7 +101,7 @@ class _Page:
                 self.refs[rid] = len(self.refs) + 1
             n = self.refs[rid]
             m = self.by_id.get(rid)
-            tip = f"{m.sender} ({m.ts:%Y-%m-%d}): {m.text[:160]}" if m else f"message {rid}"
+            tip = f"{m.sender} ({m.ts:%Y-%m-%d}): {msg_text(m)[:160]}" if m else f"message {rid}"
             out.append(f'<sup class="ref" id="use-{n}"><a href="#cite-{n}" '
                        f'title="{html.escape(tip, quote=True)}">[{n}]</a></sup>')
         return "".join(out)
@@ -184,7 +186,7 @@ def _references(page):
     for rid, n in page.refs.items():
         m = page.by_id.get(rid)
         if m:
-            text = html.escape(m.text[:220]) or "<i>[attachment]</i>"
+            text = html.escape(msg_text(m)[:220]) or "<i>[attachment]</i>"
             body = (f'<span class="who">{html.escape(m.sender)}</span> '
                     f'<span class="when">({m.ts:%Y-%m-%d %H:%M})</span>: “{text}”')
         else:
