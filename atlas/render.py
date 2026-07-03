@@ -210,7 +210,7 @@ def _infobox(pid, meta, page, tree):
     for key, label in _FACT_LABELS:
         if facts.get(key) and facts[key] != meta.get("title"):
             rows.append((label, facts[key]))
-    if meta.get("observations"):
+    if meta.get("observations") not in (None, "", "0"):
         rows.append(("Observations", meta["observations"]))
     times = sorted(page.by_id[r].ts for r in page.refs if r in page.by_id)
     if times:
@@ -289,18 +289,19 @@ def render_site(chat_dir, out=None, verbose=True):
         path.write_text(_shell(meta.get("title", pid), wiki_title, content, depth=1))
 
     # ---- main page
-    by_type = {"person": [], "topic": [], "event": []}
+    by_type = {"person": [], "topic": [], "event": [], "analysis": []}
     for pid in sorted(files):
         t = tree[pid]
-        by_type[t["type"]].append(
+        by_type.setdefault(t["type"], []).append(
             f'<li><a href="{pid}.html">{html.escape(t["title"])}</a></li>')
     span = f"{msgs[0].ts:%B %Y} – {msgs[-1].ts:%B %Y}"
     sections_html = "".join(
         f'<h2 id="{t}">{label} <span class="stats">({len(items)})</span></h2>'
         f'<ul class="cols">{"".join(items)}</ul>'
-        for t, label, items in (("person", "People", by_type["person"]),
+        for t, label, items in (("analysis", "Analyses", by_type["analysis"]),
+                                ("person", "People", by_type["person"]),
                                 ("topic", "Topics", by_type["topic"]),
-                                ("event", "Events", by_type["event"])))
+                                ("event", "Events", by_type["event"])) if items)
     content = (f"<h1>Main Page</h1>"
                f'<div class="subtitle">Welcome to {html.escape(wiki_title)}, '
                f"the encyclopedia of a group chat of {len(participants)} people, "

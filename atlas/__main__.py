@@ -18,7 +18,7 @@ from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
-from .compose import build_wiki
+from .compose import audit_pages, build_wiki
 from .config import ComposeConfig, ExtractConfig
 from .extract import build_observations
 from .render import render_site
@@ -67,6 +67,9 @@ def cmd_extract(args):
 
 def cmd_wiki(args):
     chat_dir = Path("chats") / args.slug
+    if args.audit:
+        audit_pages(chat_dir, _config_from(args, ComposeConfig))
+        return
     if args.fresh:
         shutil.rmtree(chat_dir / "wiki", ignore_errors=True)
     only = args.only.replace(",", " ").split() if args.only else None
@@ -95,6 +98,8 @@ def main(argv=None):
                    help="stop after this sublayer (for inspection)")
     w.add_argument("--pages", type=int, help="only write this many pages (for trying things out)")
     w.add_argument("--only", help="comma-separated page ids to (re)write, e.g. person/alice")
+    w.add_argument("--audit", action="store_true",
+                   help="judge every page against its cited messages; flag pages for revision")
     _config_flags(w, ComposeConfig)
     w.set_defaults(fn=cmd_wiki)
 

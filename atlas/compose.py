@@ -30,6 +30,7 @@ from .store import _atomic_write
 
 _PROMPTS = Path(__file__).resolve().parent / "prompts"
 _ID_RE = re.compile(r"(person|topic|event)/[a-z0-9][a-z0-9-]*$")
+_AID_RE = re.compile(r"analysis/[a-z0-9][a-z0-9-]*$")
 
 
 @lru_cache(maxsize=None)
@@ -208,7 +209,7 @@ def polish(article, allowed, page_ids) -> str:
     article = _unescape(article)
     article = clean_links(clean_citations(article, allowed), page_ids)
     lines = article.strip().split("\n")
-    if lines and lines[0].lstrip().startswith("# "):
+    if lines and re.match(r"#{1,3} ", lines[0].lstrip()):
         lines = lines[1:]
     # long bullet lists can degenerate into verbatim repetition — keep first occurrence
     seen, out = set(), []
@@ -310,12 +311,13 @@ def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
 
 def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
     """batch: list of (key, obs). Returns {key: [page ids]} for every key."""
+    entity_pages = {pid: p for pid, p in state["pages"].items() if p["type"] != "analysis"}
     system = (_prompt("route.md").replace("{workspace}", workspace)
-              + "\n\nPAGE TREE:\n" + _page_tree(state))
+              + "\n\nPAGE TREE:\n" + _page_tree({"pages": entity_pages}))
     lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(batch))
     user = f"OBSERVATIONS:\n{lines}\n\nRoute every observation."
     out = llm.complete_json(system, user, effort=cfg.effort,
-                            schema=route_schema(state["pages"]), schema_name="route",
+                            schema=route_schema(entity_pages), schema_name="route",
                             trace=trace, max_tokens=cfg.max_tokens, temperature=cfg.temperature)
     routed = {}
     for a in (out.get("assignments") or []):
@@ -381,6 +383,9 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg,
     if existing.exists() and not fresh:
         body = existing.read_text().split("---", 2)[-1].strip()
         user += f"\n\nEXISTING ARTICLE (revise with the new material):\n{body}"
+        if page.get("audit_issues"):
+            user += ("\n\nAUDIT FINDINGS — fix each of these in the revision:\n- "
+                     + "\n- ".join(page["audit_issues"]))
     user += "\n\nMATERIAL (observations with original messages):\n" + "\n".join(material)
     out = llm.complete_json(system, user, effort=cfg.effort, schema=article_schema(person),
                             schema_name="article", trace=trace, max_tokens=cfg.max_tokens,
@@ -404,6 +409,87 @@ def _page_path(wiki_dir: Path, pid: str) -> Path:
     return wiki_dir / (pid + ".md")
 
 
+def _page_body(wiki_dir: Path, pid: str) -> str:
+    return _page_path(wiki_dir, pid).read_text().split("---", 2)[-1].strip()
+
+
+# ---------------------------------------------------------------- analyses
+def analyses_schema(page_ids) -> dict:
+    return {
+        "type": "object", "additionalProperties": False, "required": ["analyses"],
+        "properties": {"analyses": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["id", "title", "brief", "sources"],
+            "properties": {
+                "id": {"type": "string", "description": "analysis/slug, lowercase kebab"},
+                "title": {"type": "string"},
+                "brief": {"type": "string", "description": "one sentence: the essay's angle"},
+                "sources": {"type": "array", "minItems": 2,
+                            "items": {"type": "string", "enum": list(page_ids)},
+                            "description": "the entity pages this essay draws on"},
+            }}}},
+    }
+
+
+def plan_analyses(llm, state, wiki_dir, workspace, cfg, trace) -> list:
+    """Decide the wiki's analytical essays — cross-cutting, anthropological pages
+    written FROM the entity pages (their material is the wiki itself)."""
+    written = {pid: p for pid, p in state["pages"].items()
+               if p.get("status") == "written" and p["type"] != "analysis"}
+    lines = []
+    for pid, p in sorted(written.items()):
+        heads = re.findall(r"(?m)^## (.+)$", _page_body(wiki_dir, pid))
+        lines.append(f"- {pid} \"{p['title']}\" — sections: {', '.join(heads[:8])}")
+    system = ("You plan the ANALYSIS pages of a wiki about a group chat — essays by "
+              "its resident anthropologist. Entity pages (below) record what exists; "
+              "analysis pages explain what it means: the humor system and how bits are "
+              "born and die, the group's private language as a language, its eras, its "
+              "philosophy and worldview, roles and status, how conflict works, how the "
+              "group plans and decides. Propose 6-10 essays, each with a sharp angle "
+              "(a thesis to investigate, not a category) and the source pages it draws "
+              "on. JSON only.\n\n" + workspace)
+    user = "ENTITY PAGES:\n" + "\n".join(lines)
+    out = llm.complete_json(system, user, effort=cfg.effort,
+                            schema=analyses_schema(written), schema_name="analyses",
+                            trace=trace, max_tokens=cfg.max_tokens, temperature=cfg.temperature)
+    added = []
+    for a in (out.get("analyses") or [])[:10]:
+        pid = str(a.get("id", "")).strip()
+        if pid and not pid.startswith("analysis/"):
+            pid = "analysis/" + pid
+        srcs = [s for s in (a.get("sources") or []) if s in written]
+        if _AID_RE.fullmatch(pid) and pid not in state["pages"] and len(srcs) >= 2:
+            state["pages"][pid] = {"id": pid, "title": str(a.get("title") or pid).strip(),
+                                   "type": "analysis", "aliases": [],
+                                   "brief": str(a.get("brief", "")).strip(),
+                                   "sources": srcs, "status": "pending", "obs": []}
+            added.append(pid)
+    return added
+
+
+def write_analysis(llm, pid, state, wiki_dir, workspace, cfg, trace) -> str:
+    page = state["pages"][pid]
+    material, allowed = [], set()
+    budget = cfg.material_budget * 4          # chars
+    for src in page["sources"]:
+        if not _page_path(wiki_dir, src).exists():
+            continue
+        body = _page_body(wiki_dir, src)[: budget // max(len(page["sources"]), 1)]
+        allowed.update(int(i) for i in re.findall(r"\[#(\d+)", body))
+        material.append(f"==== SOURCE PAGE [[{src}]] \"{state['pages'][src]['title']}\" ====\n{body}")
+    system = (_prompt("analysis.md").replace("{workspace}", workspace)
+              + "\n\nPAGE TREE (for [[cross-links]]):\n" + _page_tree(state))
+    user = (f"ESSAY TO WRITE: {pid} — \"{page['title']}\"\nANGLE: {page.get('brief', '')}\n\n"
+            + "\n\n".join(material))
+    out = llm.complete_json(system, user, effort=cfg.effort, schema=article_schema(False),
+                            schema_name="article", trace=trace, max_tokens=cfg.max_tokens,
+                            temperature=cfg.temperature)
+    article = (out.get("article") or "").strip()
+    if not article:
+        raise ValueError("writer returned an empty article")
+    return polish(article, allowed, set(state["pages"]))
+
+
 def _write_page_file(wiki_dir, pid, page, article, facts=None) -> None:
     path = _page_path(wiki_dir, pid)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -419,15 +505,94 @@ def _write_page_file(wiki_dir, pid, page, article, facts=None) -> None:
 
 
 def rebuild_index(wiki_dir, state) -> None:
-    by_type = {"person": [], "topic": [], "event": []}
+    by_type = {"person": [], "topic": [], "event": [], "analysis": []}
     for pid, p in sorted(state["pages"].items()):
         if p.get("status") == "written":
             by_type[p["type"]].append(f"- [{p['title']}]({pid}.md) · {len(p['obs'])} observations")
     parts = ["# Index\n"]
-    for t, label in (("person", "People"), ("topic", "Topics"), ("event", "Events")):
+    for t, label in (("person", "People"), ("topic", "Topics"), ("event", "Events"),
+                     ("analysis", "Analyses")):
         if by_type[t]:
             parts.append(f"\n## {label}\n\n" + "\n".join(by_type[t]))
     (wiki_dir / "index.md").write_text("\n".join(parts) + "\n")
+
+
+# ---------------------------------------------------------------- audit
+AUDIT_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["verdict", "issues"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["ok", "minor", "rewrite"]},
+        "issues": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["kind", "detail"],
+            "properties": {"kind": {"type": "string",
+                                    "enum": ["accuracy", "redundancy", "structure"]},
+                           "detail": {"type": "string"}}}},
+    },
+}
+
+
+def audit_pages(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
+    """Judge every written page against its own cited messages (accuracy),
+    itself (redundancy), and the house style (structure). Findings are saved to
+    wiki/audit.json; pages with a 'rewrite' verdict are marked pending with their
+    issues attached, so the next build revises them with the findings in hand."""
+    cfg = config or ComposeConfig()
+    chat_dir = Path(chat_dir)
+    wiki_dir = chat_dir / "wiki"
+    state = _load_state(wiki_dir)
+    data = json.loads((chat_dir / "observations.json").read_text())
+    ident = "identities.json" if Path("identities.json").exists() else None
+    db = MessagesDB(identities=ident)
+    by_id = {m.rowid: m for m in db.messages(data["chat_ids"])}
+    llm = LLMClient(cfg.model)
+    pages = [pid for pid, p in state["pages"].items()
+             if p.get("status") == "written" and _page_path(wiki_dir, pid).exists()]
+
+    def one(pid):
+        body = _page_body(wiki_dir, pid)
+        ids = [int(i) for i in dict.fromkeys(re.findall(r"\[#(\d+)", body))][:30]
+        cited = "\n".join(
+            f'#{i} {by_id[i].sender} ({by_id[i].ts:%Y-%m-%d}): "{(by_id[i].text or "")[:160]}"'
+            for i in ids if i in by_id)
+        user = f"ARTICLE ({pid}):\n{body}\n\nCITED MESSAGES (sample):\n{cited}"
+        out = llm.complete_json(_prompt("audit.md"), user, effort=cfg.effort,
+                                schema=AUDIT_SCHEMA, schema_name="audit",
+                                temperature=cfg.temperature, trace=None,
+                                max_tokens=cfg.max_tokens)
+        return {"page": pid, "verdict": out.get("verdict", "ok"),
+                "issues": out.get("issues", [])}
+
+    if verbose:
+        print(f"[audit] {len(pages)} pages · x{cfg.workers or len(pages)}", flush=True)
+    results = []
+    with ThreadPoolExecutor(max_workers=cfg.workers or len(pages)) as pool:
+        futures = {pool.submit(one, pid): pid for pid in pages}
+        for fut in as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as e:
+                results.append({"page": futures[fut], "verdict": "error", "issues": [],
+                                "error": str(e)[:200]})
+    _atomic_write(wiki_dir / "audit.json", sorted(results, key=lambda r: r["page"]))
+    counts = {}
+    for r in results:
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    flagged = [r for r in results if r["verdict"] == "rewrite"]
+    for r in flagged:
+        page = state["pages"].get(r["page"])
+        if page:
+            page["status"] = "pending"
+            page["audit_issues"] = [i["detail"] for i in r["issues"]][:8]
+    _save_state(wiki_dir, state)
+    if verbose:
+        print(f"[audit] verdicts: {counts} → {wiki_dir/'audit.json'}", flush=True)
+        for r in flagged:
+            print(f"  rewrite: {r['page']} — {r['issues'][0]['detail'][:110] if r['issues'] else ''}",
+                  flush=True)
+        if flagged:
+            print(f"[audit] {len(flagged)} pages marked pending — run `atlas wiki` to revise them",
+                  flush=True)
+    return counts
 
 
 # ---------------------------------------------------------------- pipeline
@@ -570,6 +735,7 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
                     article, facts = fut.result()
                     _write_page_file(wiki_dir, pid, state["pages"][pid], article, facts)
                     state["pages"][pid]["status"] = "written"
+                    state["pages"][pid].pop("audit_issues", None)
                     _save_state(wiki_dir, state)
                 except Exception as e:
                     print(f"\n  {pid} failed — {str(e)[:80]}", flush=True)
@@ -580,6 +746,42 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
             print(flush=True)
     elif verbose:
         print("[write] nothing to write — wiki is up to date", flush=True)
+
+    # ---- ANALYSES (derived views over the written wiki; regenerate when any
+    # source page is newer than the essay — deterministic trigger, no drift)
+    if not any(p["type"] == "analysis" for p in state["pages"].values()):
+        added = plan_analyses(llm, state, wiki_dir, workspace, cfg, sink("analyses-plan"))
+        _save_state(wiki_dir, state)
+        if verbose and added:
+            print(f"[analyses] planned {len(added)}: {', '.join(added)}", flush=True)
+    if only:
+        # a targeted rewrite touches only the analyses explicitly asked for
+        stale = [pid for pid in only if state["pages"].get(pid, {}).get("type") == "analysis"]
+    else:
+        stale = []
+        for pid, p in state["pages"].items():
+            if p["type"] != "analysis":
+                continue
+            path = _page_path(wiki_dir, pid)
+            srcs = [_page_path(wiki_dir, s) for s in p["sources"]]
+            if (not path.exists()
+                    or any(s.exists() and s.stat().st_mtime > path.stat().st_mtime for s in srcs)):
+                stale.append(pid)
+    if stale:
+        if verbose:
+            print(f"[analyses] {len(stale)} essays to (re)write", flush=True)
+        with ThreadPoolExecutor(max_workers=cfg.workers or len(stale)) as pool:
+            futures = {pool.submit(write_analysis, llm, pid, state, wiki_dir, workspace,
+                                   cfg, sink("write-" + pid.replace("/", "-"))): pid
+                       for pid in stale}
+            for fut in as_completed(futures):
+                pid = futures[fut]
+                try:
+                    _write_page_file(wiki_dir, pid, state["pages"][pid], fut.result())
+                    state["pages"][pid]["status"] = "written"
+                    _save_state(wiki_dir, state)
+                except Exception as e:
+                    print(f"\n  {pid} failed — {str(e)[:80]}", flush=True)
 
     rebuild_index(wiki_dir, state)
     if verbose:
