@@ -21,6 +21,7 @@ from pathlib import Path
 from .compose import build_wiki
 from .config import ComposeConfig, ExtractConfig
 from .extract import build_observations
+from .render import render_site
 
 
 def _config_flags(parser, config_cls):
@@ -96,6 +97,11 @@ def main(argv=None):
     w.add_argument("--only", help="comma-separated page ids to (re)write, e.g. person/alice")
     _config_flags(w, ComposeConfig)
     w.set_defaults(fn=cmd_wiki)
+
+    r = sub.add_parser("render", help="render the wiki as a Wikipedia-style static site")
+    r.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
+    r.add_argument("--out", help="output directory (default: chats/<slug>/site)")
+    r.set_defaults(fn=lambda a: render_site(Path("chats") / a.slug, out=a.out))
 
     args = p.parse_args(argv)
     args.fn(args)
