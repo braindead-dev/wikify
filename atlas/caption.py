@@ -48,7 +48,12 @@ def load_captions() -> dict:
 
 
 def _save(cache) -> None:
-    _atomic_write(CACHE, {"version": _PROMPT_VERSION, "captions": cache})
+    payload = {"version": _PROMPT_VERSION, "captions": cache}
+    if CACHE.exists():                              # keep the face-enrichment base layer
+        base = json.loads(CACHE.read_text()).get("base")
+        if base:
+            payload["base"] = {**base, **{k: v for k, v in cache.items() if k not in base}}
+    _atomic_write(CACHE, payload)
 
 
 def _jpeg_data_url(path: str) -> str:

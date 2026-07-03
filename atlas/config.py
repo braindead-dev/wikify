@@ -5,6 +5,16 @@ from dataclasses import dataclass
 
 
 @dataclass
+class FaceConfig:
+    """Face clustering over image attachments (optional deps: atlas[faces])."""
+    embed: str = "buffalo_l"             # embedding model: buffalo_l | lvface-b | lvface-l
+    threshold: float = 0.5               # cosine similarity to join a cluster (higher = stricter)
+    min_cluster: int = 5                 # appearances before a face becomes a person/question
+    min_det: float = 0.6                 # detector confidence below which a face is ignored
+    crops: int = 4                       # sample crops saved per face for identification
+
+
+@dataclass
 class ComposeConfig:
     """Layer 2 (observations → wiki)."""
     model: str = "deepseek-v4-flash"     # any key in the model registry

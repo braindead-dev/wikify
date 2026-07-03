@@ -20,7 +20,8 @@ from pathlib import Path
 
 from .caption import build_captions
 from .compose import audit_pages, build_wiki
-from .config import ComposeConfig, ExtractConfig
+from .config import ComposeConfig, ExtractConfig, FaceConfig
+from .faces import build_faces
 from .extract import build_observations
 from .render import render_site
 
@@ -123,6 +124,14 @@ def main(argv=None):
     c.add_argument("--limit", type=int, help="only caption this many (for trying things out)")
     c.set_defaults(fn=lambda a: build_captions(
         _chat_ids(a, Path("chats") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
+
+    f = sub.add_parser("faces", help="cluster faces in photos; owner names them via questions")
+    f.add_argument("slug", help="workspace under chats/<slug>/")
+    f.add_argument("--chats", help="comma-separated chat row ids (defaults to the manifest's)")
+    _config_flags(f, FaceConfig)
+    f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
+                                            Path("chats") / a.slug / "wiki",
+                                            _config_from(a, FaceConfig)))
 
     r = sub.add_parser("render", help="render the wiki as a Wikipedia-style static site")
     r.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")

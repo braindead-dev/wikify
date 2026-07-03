@@ -11,6 +11,7 @@ dependencies = []                          # imessage is stdlib-only
 
 [project.optional-dependencies]
 atlas = ["openai>=1.0", "python-dotenv"]   # the wiki pipeline (model seam)
+faces = ["insightface", "onnxruntime", "opencv-python-headless"]  # optional face clustering
 
 [project.scripts]
 imsg = "imessage.__main__:main"

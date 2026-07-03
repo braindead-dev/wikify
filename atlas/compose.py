@@ -618,6 +618,8 @@ def apply_answers(state, wiki_dir, verbose=True) -> int:
     questions = json.loads(path.read_text())
     applied = 0
     for q in questions:
+        if q.get("kind") == "face":                  # handled by `atlas faces`
+            continue
         answer = str(q.get("answer", "")).strip().lower()
         if q.get("applied") or not answer:
             continue
