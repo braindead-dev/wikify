@@ -879,15 +879,35 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
 
     # ---- ROUTE
     todo = [k for k in order if k not in state["routed"]]
-    if todo and any(p["status"] == "written" for p in state["pages"].values()):
+    # coverage high-water marks (message ids are chronological within each
+    # million-id block): an observation whose sources are all below its block's
+    # mark is reworded old material — it re-routes, but cannot introduce a new
+    # subject, so it never needs the extend pass.
+    marks = {int(b): m for b, m in (state.get("covered_blocks") or {}).items()}
+    if not marks:                        # migrate: harvest from written articles
+        for pid in state["pages"]:
+            path = _page_path(wiki_dir, pid)
+            for i in (re.findall(r"\[#(\d+)", path.read_text()) if path.exists() else []):
+                i = int(i)
+                marks[i // 1_000_000] = max(marks.get(i // 1_000_000, -1), i)
+    fresh = [k for k in todo
+             if any(s > marks.get(s // 1_000_000, -1) for s in keyed[k]["sources"])]
+    if fresh and any(p["status"] == "written" for p in state["pages"].values()):
         # update mode: let genuinely new subjects earn new pages before routing
-        added = extend_plan(llm, [(k, keyed[k]) for k in todo], state, workspace,
+        if verbose and len(fresh) < len(todo):
+            print(f"[plan] {len(todo)} unrouted observations — {len(fresh)} cite new "
+                  f"messages and go to extend", flush=True)
+        added = extend_plan(llm, [(k, keyed[k]) for k in fresh], state, workspace,
                             cfg, sink("extend"))
         if added:
             _save_state(wiki_dir, state)
             if verbose:
                 print(f"[plan] new pages from update: {', '.join(added)}", flush=True)
     if todo:
+        for k in todo:
+            for src in keyed[k]["sources"]:
+                marks[src // 1_000_000] = max(marks.get(src // 1_000_000, -1), src)
+        state["covered_blocks"] = {str(b): m for b, m in marks.items()}
         batches = [todo[i:i + cfg.route_batch] for i in range(0, len(todo), cfg.route_batch)]
         workers = cfg.workers or len(batches)
         if verbose:
