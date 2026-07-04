@@ -684,7 +684,7 @@ def ask_questions(llm, state, wiki_dir, workspace, cfg, trace, verbose=True) -> 
     ("yes"/"no"), and `apply_answers` reconciles on the next build."""
     path = wiki_dir / "questions.json"
     existing = json.loads(path.read_text()) if path.exists() else []
-    asked = {tuple(sorted(q["subjects"])) for q in existing}
+    asked = {tuple(sorted(q["subjects"])) for q in existing if q.get("subjects")}
     system = ("You maintain a wiki about a group chat. Look at the page tree and flag "
               "UNCERTAIN identity or structure questions worth asking the chat's owner: "
               "two person pages that might be the same human (a nickname and a name, "
