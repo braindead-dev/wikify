@@ -24,8 +24,8 @@ loosely), decide:
   title and aliases for the second one, and make the directive say precisely
   which claims/aliases belong to which person).
 - `directive`: one precise, self-contained instruction for the page writer,
-  restating the correction operationally (e.g. "The surname is Martinez, not
-  Phillips — use Martinez everywhere including the title and infobox"). It must
+  restating the correction operationally (e.g. "The surname is B, not A —
+  use B everywhere including the title and infobox"). It must
   stand alone: the writer sees only this, not the original correction.
 - `retitle`: for `rename` only — the corrected `title` and any `aliases_add`.
 

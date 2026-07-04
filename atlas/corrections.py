@@ -1,6 +1,6 @@
 """Maintainer corrections — free-text fixes folded into the wiki invisibly.
 
-    python3 -m atlas correct my-chat "Dax's surname is Martinez, not Phillips"
+    python3 -m atlas correct my-chat "X's surname is B, not A"
 
 One resolver call maps the correction onto the page tree (verifying any [#id]
 cites against the real messages) and attaches an authoritative directive to the
