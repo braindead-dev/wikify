@@ -204,7 +204,7 @@ def _save_crops(state, cfg, verbose) -> None:
                 cv2.imwrite(str(out_dir / f"{j}.jpg"), crop)
 
 
-def _sync_questions(state, wiki_dir: Path, verbose) -> None:
+def _sync_questions(state, wiki_dir: Path, verbose, cfg_max_questions=30) -> None:
     """Unnamed clusters become questions; answered questions become names.
     Answers anchor to the images behind the question (not the face id), so they
     stay correct even if a re-cluster renumbers the ids."""
@@ -232,7 +232,9 @@ def _sync_questions(state, wiki_dir: Path, verbose) -> None:
     asked = {frozenset(q.get("anchors", [q.get("face_id")])) for q in questions
              if q.get("kind") == "face"}
     added = 0
-    for fid, f in state["faces"].items():
+    biggest = sorted(state["faces"], key=lambda f: -state["faces"][f]["count"])[:cfg_max_questions]
+    for fid in biggest:
+        f = state["faces"][fid]
         anchors = f["paths"][:4]
         if not f.get("name") and not any(a & set(anchors) for a in asked):
             questions.append({
