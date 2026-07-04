@@ -70,23 +70,23 @@ and lets you merge them *explicitly* when you want. Nothing is auto-grouped.
 
 ```bash
 # list your chats (faithful — one row per chat, no merging)
-python3 -m imessage chats
+python3 -m sources.imessage chats
 
 # list the people/handles in your messages
-python3 -m imessage people
+python3 -m sources.imessage people
 
 # export one chat, or merge several by id, into data/
-python3 -m imessage export 512 638 --format txt
+python3 -m sources.imessage export 512 638 --format txt
 
 # later, pull new messages into every export you've made
-python3 -m imessage update
+python3 -m sources.imessage update
 
 # or just run it and pick interactively
-python3 -m imessage
+python3 -m sources.imessage
 ```
 
 Optionally `pip install -e .` to get an `imsg` command instead of
-`python3 -m imessage`.
+`python3 -m sources.imessage`.
 
 ## Why it's built this way
 
