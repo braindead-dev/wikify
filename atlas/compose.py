@@ -249,21 +249,51 @@ def polish(article, allowed, page_ids) -> str:
 
 
 # ---------------------------------------------------------------- stages
+def _plan_call(llm, lines, count, note, workspace, cfg, trace):
+    system = _prompt("plan.md").replace("{workspace}", workspace)
+    user = f"{note}OBSERVATIONS ({count}):\n{lines}\n\nDesign the complete page tree."
+    return llm.complete_json(system, user, effort=cfg.effort, schema=plan_schema(),
+                             schema_name="plan", trace=trace, max_tokens=cfg.max_tokens,
+                             temperature=cfg.temperature)
+
+
 def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
-    # the plan pass must see EVERY observation in one context; on very large
-    # corpora, progressively compact the line format until it fits the budget
-    budget = 750_000 * 4                                        # chars (~750k tokens)
+    """One holistic pass when the corpus fits; otherwise chronological shards
+    each propose pages and a merge pass unifies them into one tree (holism moves
+    to the merge — the reviewer then prunes as usual)."""
+    budget = 600_000 * 4                                        # chars (~600k tokens)
     for render in (lambda n, o: _obs_line(n, o),
                    lambda n, o: f"[{n}] {o['title'][:70]}",
-                   lambda n, o: o["title"][:44]):
-        lines = "\n".join(render(n, o) for n, (_, o) in enumerate(obs_items))
-        if len(lines) <= budget:
+                   lambda n, o: o["title"][:40]):
+        all_lines = [render(n, o) for n, (_, o) in enumerate(obs_items)]
+        if sum(len(l) + 1 for l in all_lines) <= budget:
             break
-    system = _prompt("plan.md").replace("{workspace}", workspace)
-    user = f"ALL OBSERVATIONS ({len(obs_items)}):\n{lines}\n\nDesign the complete page tree."
-    out = llm.complete_json(system, user, effort=cfg.effort, schema=plan_schema(),
-                            schema_name="plan", trace=trace, max_tokens=cfg.max_tokens,
-                            temperature=cfg.temperature)
+    total = sum(len(l) + 1 for l in all_lines)
+    if total <= budget:
+        out = _plan_call(llm, "\n".join(all_lines), len(obs_items), "ALL ",
+                         workspace, cfg, trace)
+    else:
+        n_shards = -(-total // budget)
+        per = -(-len(all_lines) // n_shards)
+        shards = [all_lines[i:i + per] for i in range(0, len(all_lines), per)]
+        print(f"  [plan] corpus too large for one pass — {len(shards)} chronological "
+              f"shards + merge", flush=True)
+        candidates = []
+        with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+            futures = [pool.submit(
+                _plan_call, llm, "\n".join(sh), len(sh),
+                f"PART {i + 1} of {len(shards)} of the record (chronological) — "
+                "propose pages for what you see here. ", workspace, cfg, trace)
+                for i, sh in enumerate(shards)]
+            for f in futures:
+                candidates += (f.result().get("pages") or [])
+        lines = "\n".join(f"- {c.get('id')} \"{c.get('title')}\" ({c.get('type')}) "
+                           f"aliases={c.get('aliases')}" for c in candidates)
+        merge_note = ("These candidate pages were proposed from chronological parts "
+                      "of the record. MERGE them into one final tree: unify duplicates "
+                      "(same subject proposed by several parts — union their aliases), "
+                      "keep every distinct subject, exactly one page per human. ")
+        out = _plan_call(llm, lines, len(candidates), merge_note, workspace, cfg, trace)
     pages, seen = [], set()
     for p in (out.get("pages") or []):
         pid = str(p.get("id", "")).strip()
@@ -411,11 +441,24 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg,
     person = page["type"] == "person"
     # a page with enormous material keeps every observation but sheds quotes
     # until it fits the budget — the observations carry the facts, the quotes
-    # are enrichment.
+    # are enrichment. If it still exceeds the budget with no quotes at all, the
+    # observations themselves are stride-sampled (chronology preserved) and the
+    # cap is logged — never silent.
     for q in (cfg.quotes_per_obs, 2, 1, 0):
         material, allowed = _material(page, keyed, by_id, q)
         if sum(len(m) for m in material) // 4 <= cfg.material_budget:
             break
+    else:
+        q = 0
+    size = sum(len(m) for m in material) // 4
+    if size > cfg.material_budget:
+        keep = max(1, int(len(page["obs"]) * cfg.material_budget / size))
+        stride = [page["obs"][round(i * (len(page["obs"]) - 1) / max(keep - 1, 1))]
+                  for i in range(keep)]
+        capped = dict(page, obs=list(dict.fromkeys(stride)))
+        material, allowed = _material(capped, keyed, by_id, 0)
+        print(f"\n  [write] {pid}: material capped to {len(capped['obs'])} of "
+              f"{len(page['obs'])} observations (budget)", flush=True)
     system = (_prompt("write.md").replace("{workspace}", workspace)
               + "\n\nPAGE TREE (for [[cross-links]]):\n" + _page_tree(state))
     user = (f"PAGE TO WRITE: {pid} — \"{page['title']}\" ({page['type']})"
