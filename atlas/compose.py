@@ -490,6 +490,11 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg,
         if page.get("audit_issues"):
             user += ("\n\nAUDIT FINDINGS — fix each of these in the revision:\n- "
                      + "\n- ".join(page["audit_issues"]))
+    if page.get("corrections"):
+        user += ("\n\nMAINTAINER CORRECTIONS (authoritative ground truth — where the "
+                 "material disagrees, the corrections win; state the corrected version "
+                 "as established fact and never hint the article was ever different):\n- "
+                 + "\n- ".join(page["corrections"]))
     user += "\n\nMATERIAL (observations with original messages):\n" + "\n".join(material)
     out = llm.complete_json(system, user, effort=cfg.effort, schema=article_schema(person),
                             schema_name="article", trace=trace, max_tokens=cfg.max_tokens,

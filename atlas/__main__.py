@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .caption import build_captions
 from .compose import audit_pages, build_wiki
+from .corrections import add_correction
 from .config import ComposeConfig, ExtractConfig, FaceConfig
 from .faces import build_faces
 from .extract import build_observations
@@ -134,6 +135,13 @@ def main(argv=None):
     f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
                                             Path("chats") / a.slug / "wiki",
                                             _config_from(a, FaceConfig)))
+
+    co = sub.add_parser("correct", help="fold a maintainer correction into the wiki")
+    co.add_argument("slug", help="workspace under chats/<slug>/")
+    co.add_argument("text", help="the correction in plain words (may cite [#id] messages)")
+    _config_flags(co, ComposeConfig)
+    co.set_defaults(fn=lambda a: add_correction(Path("chats") / a.slug, a.text,
+                                                _config_from(a, ComposeConfig)))
 
     r = sub.add_parser("render", help="render the wiki as a Wikipedia-style static site")
     r.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
