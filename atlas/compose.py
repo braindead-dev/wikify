@@ -261,7 +261,7 @@ def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
     """One holistic pass when the corpus fits; otherwise chronological shards
     each propose pages and a merge pass unifies them into one tree (holism moves
     to the merge — the reviewer then prunes as usual)."""
-    budget = 600_000 * 4                                        # chars (~600k tokens)
+    budget = 280_000 * 4                                        # chars (~280k tokens)
     for render in (lambda n, o: _obs_line(n, o),
                    lambda n, o: f"[{n}] {o['title'][:70]}",
                    lambda n, o: o["title"][:40]):
@@ -283,7 +283,9 @@ def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
             futures = [pool.submit(
                 _plan_call, llm, "\n".join(sh), len(sh),
                 f"PART {i + 1} of {len(shards)} of the record (chronological) — "
-                "propose pages for what you see here. ", workspace, cfg, trace)
+                "propose pages for the SIGNIFICANT subjects you see here (people, "
+                "recurring topics, real events); parts are merged afterwards, so "
+                "skip marginal one-offs. ", workspace, cfg, trace)
                 for i, sh in enumerate(shards)]
             for f in futures:
                 candidates += (f.result().get("pages") or [])
