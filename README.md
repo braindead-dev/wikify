@@ -1,9 +1,13 @@
 # imessage analysis
 
-Two tools over your local iMessage history:
+Ingestion sources + a wiki builder over your own chat history:
 
-- **`imessage`** — read and export your chats faithfully, as a **CLI** or **SDK**
-  (this README). Stdlib only — nothing to install.
+- **`sources/`** — ingestors, one folder per platform. `sources/imessage` reads
+  the local Messages database faithfully, as a **CLI** (`imsg`) or **SDK** (this
+  README; stdlib only). `sources/instagram` reads the official data-export zip
+  (unpack to `data/instagram/`, list threads with
+  `python3 -m sources.instagram chats`). atlas mixes sources freely:
+  `--chats 512,519,ig:<thread>` merges them into one timeline.
 - **`atlas`** — build a cited, Wikipedia-style knowledge base over a conversation.
   A layered pipeline. Needs an OpenRouter key in `.env`.
 
