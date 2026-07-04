@@ -21,7 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from imessage import MessagesDB
+from sources.imessage import MessagesDB
 
 from .caption import CACHE as CAPTION_CACHE
 from .caption import _PROMPT_VERSION, load_captions

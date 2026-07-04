@@ -15,7 +15,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from imessage import MessagesDB
+from sources.fetch import fetch
 
 from .llm import LLMClient
 from .store import _atomic_write
@@ -71,9 +71,7 @@ def _jpeg_data_url(path: str) -> str:
 
 def build_captions(chat_ids, model="gemini-flash", workers=32, limit=None, verbose=True) -> dict:
     """Caption every living image attachment in these chats into the shared cache."""
-    ident = "identities.json" if Path("identities.json").exists() else None
-    db = MessagesDB(identities=ident)
-    msgs = db.messages(chat_ids)
+    msgs, _ = fetch(chat_ids)
     todo = []
     cache = load_captions()
     for m in msgs:

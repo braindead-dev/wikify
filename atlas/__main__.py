@@ -43,13 +43,15 @@ def _config_from(args, config_cls):
 
 def _chat_ids(args, chat_dir: Path):
     if args.chats:
-        return [int(x) for x in args.chats.replace(",", " ").split()]
+        return [int(x) if x.isdigit() else x
+                for x in args.chats.replace(",", " ").split()]
     manifest = chat_dir / "manifest.json"
     if manifest.exists():                # resume: reuse the ids the run was started with
         ids = json.loads(manifest.read_text()).get("config", {}).get("chat_ids")
         if ids:
             return ids
-    sys.exit("no --chats given and no prior run to resume — start with --chats <ids>")
+    sys.exit("no --chats given and no prior run to resume — start with --chats <ids> "
+             "(iMessage row ids and/or ig:<thread> keys)")
 
 
 def cmd_extract(args):

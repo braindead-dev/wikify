@@ -13,8 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-from imessage import MessagesDB
-from imessage.render import format_message
+from sources.fetch import fetch
+from sources.imessage.render import format_message
 
 from .caption import load_captions
 from .config import ExtractConfig
@@ -75,9 +75,10 @@ def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None) -> lis
 def system_prompt(db, messages) -> str:
     """The extraction system prompt: role + behavior, with the contact directory
     (raw handle -> resolved name, plus the participant roster) substituted in.
-    Identical for every chunk, so it is built once per run."""
+    Identical for every chunk, so it is built once per run. Sources without a
+    contact database (senders already resolved) contribute the roster only."""
     directory = [f"{h.value} -> {h.name}" for h in db.handles()
-                 if h.name and h.name != h.value]
+                 if h.name and h.name != h.value] if db else []
     contacts = "\n".join(directory) + "\n\nparticipants: " + ", ".join(_participants(messages))
     return _PROMPT.read_text().replace("{contacts}", contacts)
 
@@ -112,18 +113,16 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     and non-participant people — never merges or dedups, so Layer 1 stays a
     faithful capture."""
     config = config or ExtractConfig()
-    # respect the user's merges/renames (same auto-detect as the imessage CLI)
-    ident = "identities.json" if Path("identities.json").exists() else None
-    db = MessagesDB(identities=ident)
     until = datetime.fromisoformat(config.until) if config.until else None
-    msgs = db.messages(chat_ids, until=until)
+    msgs, db = fetch(chat_ids, until=until)
     valid_ids = {m.rowid for m in msgs}
     participants = _participants(msgs)
     system = system_prompt(db, msgs)
     schema = observations_schema(participants)
     chunks = chunk_messages(msgs, config.chunk_tokens, config.overlap_tokens, load_captions())
 
-    meta = {"chat_ids": list(chat_ids), "model": config.model,
+    specs = [int(s) if str(s).isdigit() else str(s) for s in chat_ids]
+    meta = {"chat_ids": specs, "model": config.model,
             "chunk_tokens": config.chunk_tokens, "overlap_tokens": config.overlap_tokens}
     store = RunStore(chat_dir, meta, chunks)
     if not resume:

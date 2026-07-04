@@ -32,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 
-from imessage import MessagesDB
+from sources.fetch import fetch
 
 from .config import ComposeConfig
 from .llm import LLMClient
@@ -659,9 +659,7 @@ def audit_pages(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
     wiki_dir = chat_dir / "wiki"
     state = _load_state(wiki_dir)
     data = json.loads((chat_dir / "observations.json").read_text())
-    ident = "identities.json" if Path("identities.json").exists() else None
-    db = MessagesDB(identities=ident)
-    by_id = {m.rowid: m for m in db.messages(data["chat_ids"])}
+    by_id = {m.rowid: m for m in fetch(data["chat_ids"])[0]}
     llm = LLMClient(cfg.model)
     pages = [pid for pid, p in state["pages"].items()
              if p.get("status") == "written" and _page_path(wiki_dir, pid).exists()]
@@ -731,9 +729,7 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
             keyed[k] = o
             order.append(k)
 
-    ident = "identities.json" if Path("identities.json").exists() else None
-    db = MessagesDB(identities=ident)
-    msgs = db.messages(data["chat_ids"])
+    msgs, db = fetch(data["chat_ids"])
     by_id = {m.rowid: m for m in msgs}
     participants = sorted({m.sender for m in msgs if not m.system and m.sender})
     workspace = workspace_header(db, data["chat_ids"], msgs, participants)

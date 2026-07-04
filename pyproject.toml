@@ -14,11 +14,11 @@ atlas = ["openai>=1.0", "python-dotenv"]   # the wiki pipeline (model seam)
 faces = ["insightface", "onnxruntime", "opencv-python-headless"]  # optional face clustering
 
 [project.scripts]
-imsg = "imessage.__main__:main"
+imsg = "sources.imessage.__main__:main"
 atlas = "atlas.__main__:main"
 
 [tool.setuptools]
-packages = ["imessage", "atlas", "atlas.llm"]
+packages = ["sources", "sources.imessage", "sources.instagram", "atlas", "atlas.llm"]
 
 [tool.setuptools.package-data]
 atlas = ["prompts/*.md"]

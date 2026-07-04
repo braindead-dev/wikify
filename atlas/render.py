@@ -21,7 +21,7 @@ import re
 import shutil
 from pathlib import Path
 
-from imessage import MessagesDB
+from sources.fetch import fetch
 
 from .compose import msg_text
 
@@ -247,12 +247,11 @@ def render_site(chat_dir, out=None, verbose=True):
     plan = json.loads((wiki_dir / "plan.json").read_text())
     data = json.loads((chat_dir / "observations.json").read_text())
 
-    ident = "identities.json" if Path("identities.json").exists() else None
-    db = MessagesDB(identities=ident)
-    msgs = db.messages(data["chat_ids"])
+    msgs, db = fetch(data["chat_ids"])
     by_id = {m.rowid: m for m in msgs}
     participants = sorted({m.sender for m in msgs if not m.system and m.sender})
-    titles = {c.rowid: c.title for c in db.chats() if c.rowid in set(data["chat_ids"])}
+    titles = ({c.rowid: c.title for c in db.chats() if c.rowid in set(data["chat_ids"])}
+              if db else {})
     wiki_title = next((t for t in titles.values() if t), None) or chat_dir.name
 
     files = {p.relative_to(wiki_dir).with_suffix("").as_posix(): p
