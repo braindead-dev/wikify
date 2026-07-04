@@ -12,13 +12,24 @@ Ingestion sources + a wiki builder over your own chat history:
   A layered pipeline. Needs an OpenRouter key in `.env`.
 
   ```bash
-  python3 -m atlas caption my-chat --chats 101,102   # optional: vision-caption images
-  python3 -m atlas extract my-chat --chats 101,102   # L1: chat → observations
-  python3 -m atlas wiki my-chat                      # L2: observations → wiki pages
-  python3 -m atlas wiki my-chat --audit              # judge pages vs their citations
-  python3 -m atlas wiki my-chat --questions          # identity questions for you
-  python3 -m atlas render my-chat                    # Wikipedia-style static site
+  python3 -m sources chats                             # list chats across all sources
+  python3 -m sources show 61280042                     # resolve any citation id
+  python3 -m atlas caption my-chat --chats 101,ig:x    # optional: vision-caption images
+  python3 -m atlas extract my-chat --chats 101,ig:x    # L1: chat → observations
+  python3 -m atlas wiki my-chat                        # L2: observations → wiki pages
+  python3 -m atlas faces my-chat                       # cluster faces; you name them
+  python3 -m atlas wiki my-chat --audit                # judge pages vs their citations
+  python3 -m atlas render my-chat                      # Wikipedia-style static site
   ```
+
+  Answer the questions the build leaves in `wiki/questions.json` (identity
+  merges, face names) and re-run `wiki` — answers reconcile, captions gain
+  `pictured: <name>`, and only the affected pages rewrite.
+
+  **Adding a source** is one folder: put an adapter in `sources/<platform>/`
+  that yields the shared `Message` type (stable ids in its own range), register
+  its spec prefix in `sources/fetch.py`, and every layer above — captions,
+  faces, extraction, wiki, site — works unchanged.
 
   **Layer 1 (extract)** mines the chat in parallel chunks into granular, cited
   observations — events, traits, jokes, slang, voice — each backed by message ids.
