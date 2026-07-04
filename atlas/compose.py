@@ -359,7 +359,7 @@ def review_plan(llm, state, workspace, cfg, trace) -> int:
     return changed
 
 
-def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
+def extend_plan(llm, new_items, state, workspace, cfg, trace, effort=None) -> list:
     """Update-mode planning: given only the NEW observations, decide whether any
     genuinely new subject has emerged that deserves a page the tree doesn't have.
     Usually returns nothing — most new material belongs on existing pages. Very
@@ -374,7 +374,8 @@ def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
                 size += len(lines[end]) + 1
                 end += 1
             end = max(end, start + 1)                # a single oversize line still advances
-            added += extend_plan(llm, new_items[start:end], state, workspace, cfg, trace)
+            added += extend_plan(llm, new_items[start:end], state, workspace, cfg,
+                                 trace, effort="low")   # scan-sized slice: cap reasoning burn
             start = end
         return added
     system = ("You maintain the page tree of an existing wiki about a group chat. "
@@ -386,7 +387,7 @@ def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
               "Page ids are type/slug (person|topic|event). JSON only.\n\n" + workspace)
     user = ("PAGE TREE:\n" + _page_tree(state) + "\n\nNEW OBSERVATIONS:\n"
             + "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(new_items)))
-    out = llm.complete_json(system, user, effort=cfg.effort, schema=plan_schema(),
+    out = llm.complete_json(system, user, effort=effort or cfg.effort, schema=plan_schema(),
                             schema_name="plan", trace=trace, max_tokens=cfg.max_tokens,
                             temperature=cfg.temperature)
     added = []
