@@ -362,7 +362,20 @@ def review_plan(llm, state, workspace, cfg, trace) -> int:
 def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
     """Update-mode planning: given only the NEW observations, decide whether any
     genuinely new subject has emerged that deserves a page the tree doesn't have.
-    Usually returns nothing — most new material belongs on existing pages."""
+    Usually returns nothing — most new material belongs on existing pages. Very
+    large updates are processed in slices so the call always fits the context."""
+    budget = 280_000 * 4                                        # chars (~280k tokens)
+    lines = [_obs_line(n, o) for n, (_, o) in enumerate(new_items)]
+    if sum(len(l) + 1 for l in lines) > budget:
+        added, start = [], 0
+        while start < len(new_items):
+            size, end = 0, start
+            while end < len(new_items) and size <= budget:
+                size += len(lines[end]) + 1
+                end += 1
+            added += extend_plan(llm, new_items[start:end], state, workspace, cfg, trace)
+            start = end
+        return added
     system = ("You maintain the page tree of an existing wiki about a group chat. "
               "Below are the tree and a batch of NEW observations. Propose a new "
               "page ONLY for a genuinely new subject with enough material to "
