@@ -249,10 +249,10 @@ def polish(article, allowed, page_ids) -> str:
 
 
 # ---------------------------------------------------------------- stages
-def _plan_call(llm, lines, count, note, workspace, cfg, trace):
+def _plan_call(llm, lines, count, note, workspace, cfg, trace, effort=None):
     system = _prompt("plan.md").replace("{workspace}", workspace)
     user = f"{note}OBSERVATIONS ({count}):\n{lines}\n\nDesign the complete page tree."
-    return llm.complete_json(system, user, effort=cfg.effort, schema=plan_schema(),
+    return llm.complete_json(system, user, effort=effort or cfg.effort, schema=plan_schema(),
                              schema_name="plan", trace=trace, max_tokens=cfg.max_tokens,
                              temperature=cfg.temperature)
 
@@ -283,9 +283,10 @@ def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
             futures = [pool.submit(
                 _plan_call, llm, "\n".join(sh), len(sh),
                 f"PART {i + 1} of {len(shards)} of the record (chronological) — "
-                "propose pages for the SIGNIFICANT subjects you see here (people, "
-                "recurring topics, real events); parts are merged afterwards, so "
-                "skip marginal one-offs. ", workspace, cfg, trace)
+                "propose AT MOST 60 pages for the most significant subjects you "
+                "see here (people, recurring topics, real events); parts are "
+                "merged afterwards, so skip marginal one-offs. ",
+                workspace, cfg, trace, "low")
                 for i, sh in enumerate(shards)]
             for f in futures:
                 candidates += (f.result().get("pages") or [])
