@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .db import MessagesDB
+from .hydrate import hydrate
 from .identity import load_identities
 from .render import format_message
 
@@ -176,6 +177,10 @@ def cmd_export(db, args):
             since=_parse_date(args.after), until=_parse_date(args.before))
 
 
+def cmd_hydrate(db, args):
+    hydrate(args.chatids, stall_minutes=args.stall_minutes)
+
+
 def cmd_show(db, args):
     try:
         window = db.message(args.rowid, context=args.context)
@@ -305,6 +310,13 @@ def main(argv=None):
     p.add_argument("rowid", type=int, help="message rowid (from an --ids export)")
     p.add_argument("--context", type=int, default=2, help="messages of context on each side")
     p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("hydrate", help="download offloaded iCloud attachments by "
+                                       "driving Messages.app scrollback")
+    p.add_argument("chatids", nargs="+", type=int, help="chat row ids (see `imsg chats`)")
+    p.add_argument("--stall-minutes", type=int, default=5,
+                   help="stop after this long with no new attachments (default 5)")
+    p.set_defaults(func=cmd_hydrate, needs_db=False)
 
     p = sub.add_parser("alias", help="merge handles under one person (writes identities.json)")
     p.add_argument("name", help="the person's display name")
