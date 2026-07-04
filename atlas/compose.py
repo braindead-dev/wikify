@@ -370,9 +370,10 @@ def extend_plan(llm, new_items, state, workspace, cfg, trace) -> list:
         added, start = [], 0
         while start < len(new_items):
             size, end = 0, start
-            while end < len(new_items) and size <= budget:
+            while end < len(new_items) and size + len(lines[end]) + 1 <= budget:
                 size += len(lines[end]) + 1
                 end += 1
+            end = max(end, start + 1)                # a single oversize line still advances
             added += extend_plan(llm, new_items[start:end], state, workspace, cfg, trace)
             start = end
         return added
