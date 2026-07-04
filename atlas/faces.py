@@ -146,20 +146,25 @@ def _cluster(cfg, verbose) -> dict:
     _, np, _ = _deps()
     data = np.load(EMBED, allow_pickle=True)
     order = np.argsort(-data["scores"])
-    centroids, members = [], []
+    # preallocated centroid matrix — the greedy pass stays O(n·k) matmuls with
+    # no per-face reallocations, so 10k faces cluster in seconds
+    cap = len(order)
+    cents = np.zeros((cap, 512), dtype=np.float32)
+    k, members = 0, []
     for idx in order:
-        e = data["embeddings"][idx]
-        if centroids:
-            sims = np.array(centroids) @ e
+        e = data["embeddings"][idx].astype(np.float32)
+        if k:
+            sims = cents[:k] @ e
             best = int(np.argmax(sims))
             if sims[best] >= cfg.threshold:
                 members[best].append(int(idx))
                 n = len(members[best])
-                centroids[best] = (np.array(centroids[best]) * (n - 1) + e) / n
-                centroids[best] /= np.linalg.norm(centroids[best])
+                c = (cents[best] * (n - 1) + e) / n
+                cents[best] = c / (np.linalg.norm(c) or 1.0)
                 continue
-        centroids.append(e)
+        cents[k] = e
         members.append([int(idx)])
+        k += 1
     clusters = sorted((m for m in members if len(m) >= cfg.min_cluster), key=len, reverse=True)
     state = json.loads(STATE.read_text()) if STATE.exists() else {"faces": {}}
     # names survive re-clustering: a new cluster inherits the name of the old
