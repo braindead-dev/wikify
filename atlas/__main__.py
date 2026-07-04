@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 import sys
 from collections import Counter
 from dataclasses import fields
@@ -25,6 +26,7 @@ from .config import ComposeConfig, ExtractConfig, FaceConfig
 from .faces import build_faces
 from .extract import build_observations
 from .render import render_site
+from .sync import sync_site
 
 
 def _config_flags(parser, config_cls):
@@ -77,8 +79,9 @@ def cmd_wiki(args):
         open_qs = [q for q in (json.loads(path.read_text()) if path.exists() else [])
                    if not q.get("applied") and not str(q.get("answer", "")).strip()]
         for q in open_qs:
-            print(f"[{q['kind']}] {q['question']}\n  subjects: {q['subjects']}\n"
-                  f"  evidence: {q['evidence']}\n")
+            print(f"[{q['kind']}] {q['question']}\n"
+                  f"  subjects: {q.get('subjects') or q.get('face_id', '-')}\n"
+                  f"  evidence: {q.get('evidence', '-')}\n")
         print(f"{len(open_qs)} open — answer by setting \"answer\": \"yes\"/\"no\" in {path}")
         return
     if args.audit:
@@ -89,6 +92,59 @@ def cmd_wiki(args):
     only = args.only.replace(",", " ").split() if args.only else None
     build_wiki(chat_dir, _config_from(args, ComposeConfig),
                stage=args.stage, limit_pages=args.pages, only=only)
+
+
+_INTERVALS = {"m": 60, "h": 3600, "d": 86400}
+
+
+def cmd_update(args):
+    """One incremental pass of the whole pipeline: caption new images, extract
+    new/changed chunks, fold into the wiki, render, and sync when configured.
+    Every stage is a no-op when nothing changed."""
+    import sys as _sys
+    chat_dir = Path("chats") / args.slug
+    root = Path(__file__).resolve().parents[1]
+    plist = Path.home() / "Library" / "LaunchAgents" / f"com.atlas.update.{args.slug}.plist"
+    if args.unschedule:
+        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+        plist.unlink(missing_ok=True)
+        print(f"[update] schedule removed ({plist.name})")
+        return
+    if args.schedule:
+        n, unit = int(args.schedule[:-1]), args.schedule[-1]
+        secs = n * _INTERVALS[unit]
+        log = (root / chat_dir / "update.log").resolve()
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        plist.write_text(f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.atlas.update.{args.slug}</string>
+  <key>ProgramArguments</key><array>
+    <string>{_sys.executable}</string><string>-m</string><string>atlas</string>
+    <string>update</string><string>{args.slug}</string>
+  </array>
+  <key>WorkingDirectory</key><string>{root}</string>
+  <key>StartInterval</key><integer>{secs}</integer>
+  <key>StandardOutPath</key><string>{log}</string>
+  <key>StandardErrorPath</key><string>{log}</string>
+</dict></plist>
+""")
+        subprocess.run(["launchctl", "unload", str(plist)], capture_output=True)
+        r = subprocess.run(["launchctl", "load", str(plist)], capture_output=True, text=True)
+        print(f"[update] scheduled every {args.schedule} via launchd ({plist.name})"
+              + (f" — load warning: {r.stderr.strip()}" if r.stderr.strip() else ""))
+        print(f"  log: {log}")
+        print("  note: the scheduled python needs Full Disk Access to read chat.db "
+              "(System Settings → Privacy & Security)")
+        return
+    ids = _chat_ids(args, chat_dir)
+    build_captions(ids)
+    build_observations(chat_dir, ids, ExtractConfig())
+    build_wiki(chat_dir, ComposeConfig())
+    if (chat_dir / "sync.json").exists() or args.to:
+        sync_site(chat_dir, to=args.to)
+    else:
+        render_site(chat_dir)
 
 
 def main(argv=None):
@@ -135,6 +191,22 @@ def main(argv=None):
     f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
                                             Path("chats") / a.slug / "wiki",
                                             _config_from(a, FaceConfig)))
+
+    u = sub.add_parser("update", help="one incremental pass: caption → extract → wiki → render → sync")
+    u.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
+    u.add_argument("--chats", help="comma-separated chat specs (defaults to the manifest's)")
+    u.add_argument("--to", help="sync target repo (remembered after first use)")
+    u.add_argument("--schedule", metavar="N{m,h,d}",
+                   help="run automatically at this interval via launchd, e.g. 6h")
+    u.add_argument("--unschedule", action="store_true", help="remove the launchd schedule")
+    u.set_defaults(fn=cmd_update)
+
+    sy = sub.add_parser("sync", help="deploy the rendered site into a git repo (renders first)")
+    sy.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
+    sy.add_argument("--to", help="git repo path (remembered in chats/<slug>/sync.json)")
+    sy.add_argument("--no-render", action="store_true", help="sync the site as-is")
+    sy.set_defaults(fn=lambda a: sync_site(Path("chats") / a.slug, to=a.to,
+                                           render=not a.no_render))
 
     co = sub.add_parser("correct", help="fold a maintainer correction into the wiki")
     co.add_argument("slug", help="workspace under chats/<slug>/")

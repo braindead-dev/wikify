@@ -24,7 +24,22 @@ Ingestion sources + a wiki builder over your own chat history:
 
   Answer the questions the build leaves in `wiki/questions.json` (identity
   merges, face names) and re-run `wiki` — answers reconcile, captions gain
-  `pictured: <name>`, and only the affected pages rewrite.
+  `pictured: <name>`, and only the affected pages rewrite. When something in
+  the wiki is simply wrong, say so in plain words — `python3 -m atlas correct
+  my-chat "X and Y are two different people"` — and the affected pages
+  regenerate as if they had always been right.
+
+  ```bash
+  python3 -m atlas update my-chat                    # one incremental pass of everything
+  python3 -m atlas sync my-chat --to ~/repos/my-wiki # deploy site into a git repo
+  python3 -m atlas update my-chat --schedule 6h      # keep it fresh via launchd
+  ```
+
+  `sync` mirrors the rendered site into a git repo and commits (pushing when a
+  remote exists) — point GitHub/Cloudflare Pages at that repo and the wiki is a
+  website; the target is remembered after the first `--to`. `update` chains
+  caption → extract → wiki → render → sync, each stage a no-op when nothing
+  changed, so scheduling it keeps the site current with the conversation.
 
   **Adding a source** is one folder: put an adapter in `sources/<platform>/`
   that yields the shared `Message` type (stable ids in its own range), register
