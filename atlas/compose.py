@@ -257,7 +257,7 @@ def _plan_call(llm, lines, count, note, workspace, cfg, trace, effort=None):
                              temperature=cfg.temperature)
 
 
-def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
+def plan_pages(llm, obs_items, workspace, cfg, trace, trace_dir=None) -> list:
     """One holistic pass when the corpus fits; otherwise chronological shards
     each propose pages and a merge pass unifies them into one tree (holism moves
     to the merge — the reviewer then prunes as usual)."""
@@ -278,16 +278,31 @@ def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
         shards = [all_lines[i:i + per] for i in range(0, len(all_lines), per)]
         print(f"  [plan] corpus too large for one pass — {len(shards)} chronological "
               f"shards + merge", flush=True)
-        candidates = []
-        with ThreadPoolExecutor(max_workers=len(shards)) as pool:
-            futures = [pool.submit(
-                _plan_call, llm, "\n".join(sh), len(sh),
+        # each shard's proposals persist immediately (keyed by input hash), so an
+        # interrupted planning run resumes instead of restarting
+        cache_dir = Path(trace_dir) if trace_dir else None
+
+        def one_shard(i, sh):
+            text = "\n".join(sh)
+            key = hashlib.sha1(text.encode()).hexdigest()[:10]
+            cached = cache_dir / f"shard-{i:02d}-{key}.json" if cache_dir else None
+            if cached and cached.exists():
+                return json.loads(cached.read_text())
+            out = _plan_call(
+                llm, text, len(sh),
                 f"PART {i + 1} of {len(shards)} of the record (chronological) — "
                 "propose AT MOST 60 pages for the most significant subjects you "
                 "see here (people, recurring topics, real events); parts are "
                 "merged afterwards, so skip marginal one-offs. ",
                 workspace, cfg, trace, "low")
-                for i, sh in enumerate(shards)]
+            if cached:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                _atomic_write(cached, out)
+            return out
+
+        candidates = []
+        with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+            futures = [pool.submit(one_shard, i, sh) for i, sh in enumerate(shards)]
             for f in futures:
                 candidates += (f.result().get("pages") or [])
         lines = "\n".join(f"- {c.get('id')} \"{c.get('title')}\" ({c.get('type')}) "
@@ -825,7 +840,8 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
     if not state["pages"]:
         if verbose:
             print(f"[plan] designing page tree from {len(order)} observations…", flush=True)
-        pages = plan_pages(llm, [(k, keyed[k]) for k in order], workspace, cfg, sink("plan"))
+        pages = plan_pages(llm, [(k, keyed[k]) for k in order], workspace, cfg,
+                           sink("plan"), trace_dir=chat_dir / "plan-shards")
         state["pages"] = {p["id"]: {**p, "status": "pending", "obs": []} for p in pages}
         _save_state(wiki_dir, state)
         if verbose:
