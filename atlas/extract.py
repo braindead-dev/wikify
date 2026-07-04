@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-from sources.fetch import fetch
+from sources.fetch import fetch_streams
 from sources.imessage.render import format_message
 
 from .caption import load_captions
@@ -44,12 +44,14 @@ def _render_line(m, captions) -> str:
     return line
 
 
-def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None) -> list:
-    """Split into ~chunk_tokens slices of ID-tagged lines, each overlapping the
-    previous by ~overlap_tokens so a thread spanning a seam is seen whole. Each
-    chunk carries its text, the row-id span it covers, and a content hash (so a
-    chunk whose rendering changed — e.g. newly captioned images — re-extracts)."""
+def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None, stream="") -> list:
+    """Split one conversation stream into ~chunk_tokens slices of ID-tagged
+    lines, each overlapping the previous by ~overlap_tokens so a thread spanning
+    a seam is seen whole. Each chunk carries its text (headed by its channel),
+    the id span it covers, and a content hash (so a chunk whose rendering
+    changed — e.g. newly captioned images — re-extracts)."""
     captions = captions or {}
+    head = f"(channel: {stream})\n" if stream else ""
     lines = [_render_line(m, captions) for m in messages]
     tks = [_toks(ln) for ln in lines]
     chunks, i, n = [], 0, len(lines)
@@ -58,7 +60,7 @@ def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None) -> lis
         while j < n and t < chunk_tokens:
             t += tks[j]
             j += 1
-        text = "\n".join(lines[i:j])
+        text = head + "\n".join(lines[i:j])
         chunks.append({"text": text, "first_id": messages[i].rowid,
                        "last_id": messages[j - 1].rowid, "n_messages": j - i,
                        "text_hash": hashlib.sha1(text.encode()).hexdigest()[:10]})
@@ -70,6 +72,16 @@ def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None) -> lis
             ov += tks[back]
         i = back
     return chunks
+
+
+def chunk_streams(streams, chunk_tokens, overlap_tokens, captions=None) -> list:
+    """Chunk every stream independently (parallel channels never interleave in a
+    transcript) and concatenate in stream order — one flat chunk list."""
+    out = []
+    for s in streams:
+        out += chunk_messages(s["messages"], chunk_tokens, overlap_tokens,
+                              captions, stream=s["label"] if len(streams) > 1 else "")
+    return out
 
 
 def system_prompt(db, messages) -> str:
@@ -114,12 +126,18 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     faithful capture."""
     config = config or ExtractConfig()
     until = datetime.fromisoformat(config.until) if config.until else None
-    msgs, db = fetch(chat_ids, until=until)
+    streams, db = fetch_streams(chat_ids, until=until)
+    msgs = [m for s in streams for m in s["messages"]]
     valid_ids = {m.rowid for m in msgs}
     participants = _participants(msgs)
     system = system_prompt(db, msgs)
+    if len(streams) > 1:
+        system += ("\n\nThis group talks across several channels (" +
+                   "; ".join(s["label"] for s in streams) +
+                   ") — the same people throughout. Each slice you receive is "
+                   "from one channel, named at the top.")
     schema = observations_schema(participants)
-    chunks = chunk_messages(msgs, config.chunk_tokens, config.overlap_tokens, load_captions())
+    chunks = chunk_streams(streams, config.chunk_tokens, config.overlap_tokens, load_captions())
 
     specs = [int(s) if str(s).isdigit() else str(s) for s in chat_ids]
     meta = {"chat_ids": specs, "model": config.model,

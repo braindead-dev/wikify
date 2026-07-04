@@ -32,7 +32,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
 
-from sources.fetch import fetch
+from sources.fetch import fetch, parse_specs
+from sources.instagram import InstagramExport
 
 from .config import ComposeConfig
 from .llm import LLMClient
@@ -149,9 +150,16 @@ def _save_state(wiki_dir: Path, state) -> None:
 
 # ---------------------------------------------------------------- rendering
 def workspace_header(db, chat_ids, msgs, participants) -> str:
-    return (f"WIKI WORKSPACE: a group chat of {len(participants)} people "
-            f"({', '.join(participants)}), {msgs[0].ts.date()} to {msgs[-1].ts.date()}, "
-            f"{len(msgs)} messages.")
+    header = (f"WIKI WORKSPACE: a group chat of {len(participants)} people "
+              f"({', '.join(participants)}), {msgs[0].ts.date()} to {msgs[-1].ts.date()}, "
+              f"{len(msgs)} messages.")
+    im_ids, ig_keys = parse_specs(chat_ids)
+    if ig_keys and im_ids:
+        titles = [InstagramExport().title(k) for k in ig_keys]
+        header += (" The group talks across channels — iMessage and Instagram ("
+                   + ", ".join(titles) + ") — the same people throughout; treat the "
+                   "record as one history.")
+    return header
 
 
 def _page_tree(state) -> str:
@@ -242,7 +250,15 @@ def polish(article, allowed, page_ids) -> str:
 
 # ---------------------------------------------------------------- stages
 def plan_pages(llm, obs_items, workspace, cfg, trace) -> list:
-    lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(obs_items))
+    # the plan pass must see EVERY observation in one context; on very large
+    # corpora, progressively compact the line format until it fits the budget
+    budget = 750_000 * 4                                        # chars (~750k tokens)
+    for render in (lambda n, o: _obs_line(n, o),
+                   lambda n, o: f"[{n}] {o['title'][:70]}",
+                   lambda n, o: o["title"][:44]):
+        lines = "\n".join(render(n, o) for n, (_, o) in enumerate(obs_items))
+        if len(lines) <= budget:
+            break
     system = _prompt("plan.md").replace("{workspace}", workspace)
     user = f"ALL OBSERVATIONS ({len(obs_items)}):\n{lines}\n\nDesign the complete page tree."
     out = llm.complete_json(system, user, effort=cfg.effort, schema=plan_schema(),
