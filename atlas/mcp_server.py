@@ -54,10 +54,10 @@ def build_server(chat_dir: Path) -> FastMCP:
         return json.loads((wiki_dir / "plan.json").read_text())
 
     def messages():
-        if "msgs" not in cache:
+        mtime = (chat_dir / "observations.json").stat().st_mtime
+        if cache.get("mtime") != mtime:            # wiki rebuilt → reload
             msgs, _ = fetch(data()["chat_ids"])
-            cache["msgs"] = msgs
-            cache["by_id"] = {m.rowid: m for m in msgs}
+            cache.update(msgs=msgs, by_id={m.rowid: m for m in msgs}, mtime=mtime)
         return cache["msgs"], cache["by_id"]
 
     def page_files():
@@ -74,9 +74,19 @@ def build_server(chat_dir: Path) -> FastMCP:
         sources = ([f"iMessage chats {im_ids}"] if im_ids else []) + \
                   [f"Instagram thread {k}" for k in ig_keys]
         built = datetime.fromtimestamp((wiki_dir / "plan.json").stat().st_mtime)
+        msgs, _ = messages()
+        last_seen = {}
+        for m in msgs:
+            block = m.rowid // 1_000_000
+            if m.ts > last_seen.get(block, datetime.min):
+                last_seen[block] = m.ts
+        freshest = max(last_seen.values()) if last_seen else None
         lines = [f"WIKI: {chat_dir.name} · {len(pages)} pages · "
                  f"{d['count']} observations from {', '.join(sources)}",
-                 f"last build: {built:%Y-%m-%d %H:%M} · today: {datetime.now():%Y-%m-%d}", ""]
+                 f"last build: {built:%Y-%m-%d %H:%M} · newest message: "
+                 f"{freshest:%Y-%m-%d} · today: {datetime.now():%Y-%m-%d}",
+                 "(claims about events after the newest message date are outside "
+                 "this brain's knowledge)", ""]
         by_dir = {}
         for pid in pages:
             by_dir.setdefault(pid.split("/")[0], []).append(pid)
@@ -118,9 +128,11 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(chunk) + tail
 
     @mcp.tool()
-    def search(pattern: str, where: str = "wiki", max_results: int = 40) -> str:
+    def search(pattern: str, where: str = "wiki", max_results: int = 40,
+               since: str = "", until: str = "") -> str:
         """Regex search (case-insensitive). `where` is one of: wiki (page text),
-        observations (extracted facts), messages (raw conversation), all."""
+        observations (extracted facts), messages (raw conversation), all.
+        `since`/`until` (YYYY-MM-DD) date-scope the messages stratum."""
         try:
             rx = re.compile(pattern, re.IGNORECASE)
         except re.error as e:
@@ -142,7 +154,11 @@ def build_server(chat_dir: Path) -> FastMCP:
 
         def scan_msgs():
             msgs, _ = messages()
+            lo = datetime.fromisoformat(since) if since else None
+            hi = datetime.fromisoformat(until) if until else None
             for m in msgs:
+                if (lo and m.ts < lo) or (hi and m.ts > hi):
+                    continue
                 if m.text and rx.search(m.text):
                     hits.append(f"#{m.rowid} {m.ts:%Y-%m-%d} {m.sender}: {m.text[:180]}")
 
@@ -156,6 +172,38 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(hits[:max_results]) + \
             (f"\n… {total - max_results} more (narrow the pattern)" if total > max_results else "") \
             if hits else "no matches"
+
+    @mcp.tool()
+    def find(query: str, max_results: int = 12) -> str:
+        """Ranked page lookup for natural-language queries ("the road trip where
+        the car broke") — scores title, aliases, and body overlap. Use this when
+        you don't know exact wording; use `search` for exact/regex matches."""
+        terms = [t for t in re.findall(r"[a-z0-9']+", query.lower()) if len(t) > 2]
+        if not terms:
+            return "give me a few content words"
+        scored = []
+        st = state()
+        for pid, pg in st["pages"].items():
+            if pg["status"] != "written":
+                continue
+            path = wiki_dir / (pid + ".md")
+            body = path.read_text().lower() if path.exists() else ""
+            head = (pid + " " + pg["title"] + " " + " ".join(pg.get("aliases", []))).lower()
+            score = sum(6 for t in terms if t in head) +                     sum(min(body.count(t), 4) for t in terms)
+            if score:
+                scored.append((score, f"{pid}  '{pg['title']}'  (score {score})"))
+        scored.sort(reverse=True)
+        return "\n".join(line for _, line in scored[:max_results]) or "nothing scored — try search()"
+
+    @mcp.tool()
+    def backlinks(page: str) -> str:
+        """Every page that links TO this one — traverse the wiki as a graph
+        (often surfaces context that text search misses)."""
+        target = page.removesuffix(".md")
+        rx = re.compile(r"\[\[" + re.escape(target) + r"[|\]]")
+        out = [str(f.relative_to(wiki_dir).with_suffix(""))
+               for f in page_files() if rx.search(f.read_text())]
+        return "\n".join(out) or f"no pages link to {target}"
 
     @mcp.tool()
     def resolve(citation: int, context: int = 4) -> str:
