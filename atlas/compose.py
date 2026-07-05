@@ -1014,6 +1014,9 @@ def replan(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
     participants = sorted({m.sender for m in msgs if not m.system and m.sender})
     workspace = workspace_header(db, data["chat_ids"], msgs, participants)
     llm = LLMClient(cfg.model)
+    premises = [c["directive"] for c in state.get("corrections", [])]
+    constraint = ("\n\nMAINTAINER-VERIFIED FACTS (immovable — never propose an op "
+                  "that contradicts one):\n- " + "\n- ".join(premises)) if premises else ""
     out = llm.complete_json(
         ("You are the standards editor of this wiki. Given every page with its "
          "stats, propose the structural operations that would make the tree ideal: "
@@ -1021,7 +1024,7 @@ def replan(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
          "whose names no longer fit their content, delete pages that should not "
          "exist. Propose ONLY what clearly improves the tree — usually a handful of "
          "ops, sometimes none. Also report factual inconsistencies you can see "
-         "between page titles/scopes. JSON only.\n\n" + workspace),
+         "between page titles/scopes. JSON only.\n\n" + workspace + constraint),
         "PAGES:\n" + "\n".join(lines), effort=cfg.effort, schema=_REPLAN_SCHEMA,
         schema_name="replan", max_tokens=cfg.max_tokens, temperature=cfg.temperature)
 
@@ -1034,6 +1037,11 @@ def replan(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
             merge_pages(state, wiki_dir, op["into"], pid)
             applied.append(f"merge {pid} → {op['into']} ({op['reason'][:60]})")
         elif op["op"] == "retitle" and op.get("new_title"):
+            page_premises = corrections_for(state, pid)
+            if any(op["new_title"].lower() in d.lower() or
+                   state["pages"][pid]["title"].lower() in d.lower()
+                   for d in page_premises):
+                continue                # never retitle against a maintainer correction
             old = state["pages"][pid]["title"]
             state["pages"][pid]["title"] = op["new_title"]
             state["pages"][pid]["aliases"] = sorted(set(
