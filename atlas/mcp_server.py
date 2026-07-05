@@ -1,0 +1,207 @@
+"""MCP server over a built wiki — the knowledge base as tools.
+
+    python3 -m atlas mcp my-chat
+
+Exposes any client-agnostic MCP host (Claude, ChatGPT, Cursor, …) to the wiki:
+`overview` injects the dynamic context (page tree, sources, freshness), the
+read/search/resolve tools mirror how coding agents explore a repository, and
+`correct` is the ONLY write path — hand-edits to pages would be regenerated
+away on the next build, while corrections attach durable premises that every
+future rewrite honors.
+"""
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP, Image
+
+from sources.fetch import fetch, parse_specs
+from sources.imessage.render import format_message
+
+INSTRUCTIONS = """This server is a cited wiki built from a real conversation history
+(multiple sources merged into one timeline). Pages are markdown with [#id]
+citations pointing at original messages.
+
+Start every session by calling `overview` — it returns the page tree, the
+sources, and freshness metadata. Read pages before searching; the wiki is the
+synthesized layer and usually answers directly. Drop to `search` over
+observations/messages only when the wiki lacks the detail, and use `resolve`
+to quote original messages behind any citation.
+
+Never suggest editing page files directly — pages are regenerated from
+underlying data and hand-edits are lost. To fix anything wrong, call
+`correct` with the fact in plain words; it becomes a durable premise."""
+
+
+def build_server(chat_dir: Path) -> FastMCP:
+    chat_dir = Path(chat_dir)
+    wiki_dir = chat_dir / "wiki"
+    if not (wiki_dir / "plan.json").exists():
+        raise SystemExit(f"no built wiki at {wiki_dir} — run `atlas wiki` first")
+    mcp = FastMCP(f"wiki-{chat_dir.name}", instructions=INSTRUCTIONS)
+    cache = {}
+
+    def data():
+        return json.loads((chat_dir / "observations.json").read_text())
+
+    def state():
+        return json.loads((wiki_dir / "plan.json").read_text())
+
+    def messages():
+        if "msgs" not in cache:
+            msgs, _ = fetch(data()["chat_ids"])
+            cache["msgs"] = msgs
+            cache["by_id"] = {m.rowid: m for m in msgs}
+        return cache["msgs"], cache["by_id"]
+
+    def page_files():
+        return sorted(p for p in wiki_dir.rglob("*.md"))
+
+    @mcp.tool()
+    def overview() -> str:
+        """The whole knowledge base at a glance: sources, freshness, page tree
+        (collapsed to directories when large), and the main-page summary. Call
+        this first in every session."""
+        s, d = state(), data()
+        pages = {pid: p for pid, p in s["pages"].items() if p["status"] == "written"}
+        im_ids, ig_keys = parse_specs(d["chat_ids"])
+        sources = ([f"iMessage chats {im_ids}"] if im_ids else []) + \
+                  [f"Instagram thread {k}" for k in ig_keys]
+        built = datetime.fromtimestamp((wiki_dir / "plan.json").stat().st_mtime)
+        lines = [f"WIKI: {chat_dir.name} · {len(pages)} pages · "
+                 f"{d['count']} observations from {', '.join(sources)}",
+                 f"last build: {built:%Y-%m-%d %H:%M} · today: {datetime.now():%Y-%m-%d}", ""]
+        by_dir = {}
+        for pid in pages:
+            by_dir.setdefault(pid.split("/")[0], []).append(pid)
+        for dirname, pids in sorted(by_dir.items()):
+            if len(pages) > 400:                    # overflow: one line per directory
+                lines.append(f"{dirname}/ — {len(pids)} pages (list_pages('{dirname}'))")
+            else:
+                lines.append(f"{dirname}/")
+                lines += [f"  {pid}  \"{pages[pid]['title']}\"" for pid in sorted(pids)]
+        index = wiki_dir / "index.md"
+        if index.exists():
+            lines += ["", "MAIN PAGE:", index.read_text()[:3000]]
+        return "\n".join(lines)
+
+    @mcp.tool()
+    def list_pages(prefix: str = "") -> str:
+        """List page ids (optionally under a prefix like 'person' or
+        'topic/road') with titles and sizes."""
+        s = state()
+        out = []
+        for pid, p in sorted(s["pages"].items()):
+            if p["status"] == "written" and pid.startswith(prefix):
+                path = wiki_dir / (pid + ".md")
+                words = len(path.read_text().split()) if path.exists() else 0
+                out.append(f"{pid}  \"{p['title']}\"  {words} words · {len(p['obs'])} obs")
+        return "\n".join(out) or f"no pages under {prefix!r}"
+
+    @mcp.tool()
+    def read_page(page: str, offset: int = 0, limit: int = 300) -> str:
+        """Read a page by id (e.g. 'person/alice'), `limit` lines from `offset`.
+        Citations look like [#12345] — resolve them with `resolve`."""
+        path = wiki_dir / (page.removesuffix(".md") + ".md")
+        if not path.exists():
+            return f"no page {page!r} — try list_pages()"
+        lines = path.read_text().splitlines()
+        chunk = lines[offset:offset + limit]
+        tail = f"\n… {len(lines) - offset - limit} more lines (offset={offset + limit})" \
+            if len(lines) > offset + limit else ""
+        return "\n".join(chunk) + tail
+
+    @mcp.tool()
+    def search(pattern: str, where: str = "wiki", max_results: int = 40) -> str:
+        """Regex search (case-insensitive). `where` is one of: wiki (page text),
+        observations (extracted facts), messages (raw conversation), all."""
+        try:
+            rx = re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            return f"bad regex: {e}"
+        hits = []
+
+        def scan_wiki():
+            for path in page_files():
+                for n, line in enumerate(path.read_text().splitlines(), 1):
+                    if rx.search(line):
+                        hits.append(f"{path.relative_to(wiki_dir).with_suffix('')}:{n}: "
+                                    f"{line.strip()[:200]}")
+
+        def scan_obs():
+            for o in data()["observations"]:
+                blob = f"{o['title']} — {o.get('detail', '')}"
+                if rx.search(blob):
+                    hits.append(f"obs [{','.join(f'#{s}' for s in o['sources'][:3])}]: {blob[:200]}")
+
+        def scan_msgs():
+            msgs, _ = messages()
+            for m in msgs:
+                if m.text and rx.search(m.text):
+                    hits.append(f"#{m.rowid} {m.ts:%Y-%m-%d} {m.sender}: {m.text[:180]}")
+
+        scans = {"wiki": [scan_wiki], "observations": [scan_obs], "messages": [scan_msgs],
+                 "all": [scan_wiki, scan_obs, scan_msgs]}.get(where)
+        if not scans:
+            return "where must be one of: wiki, observations, messages, all"
+        with ThreadPoolExecutor(max_workers=len(scans)) as pool:
+            list(pool.map(lambda f: f(), scans))
+        total = len(hits)
+        return "\n".join(hits[:max_results]) + \
+            (f"\n… {total - max_results} more (narrow the pattern)" if total > max_results else "") \
+            if hits else "no matches"
+
+    @mcp.tool()
+    def resolve(citation: int, context: int = 4) -> str:
+        """Resolve a [#id] citation to the original message with surrounding
+        conversation — the ground truth behind any wiki claim."""
+        msgs, by_id = messages()
+        if citation not in by_id:
+            return f"no message #{citation}"
+        idx = msgs.index(by_id[citation])
+        out = []
+        for m in msgs[max(0, idx - context):idx + context + 1]:
+            marker = "►" if m.rowid == citation else " "
+            out.append(f"{marker} {format_message(m, ids=True, with_date=True)}")
+        return "\n".join(out)
+
+    @mcp.tool()
+    def get_image(message_id: int) -> Image:
+        """Fetch the photo attached to a message (find message ids via search
+        or page citations near [img: …] captions)."""
+        _, by_id = messages()
+        m = by_id.get(message_id)
+        paths = [p for p in (m.attachment_paths if m else []) if p and Path(p).exists()]
+        if not paths:
+            raise ValueError(f"no image on message #{message_id}")
+        src = Path(paths[0])
+        if src.suffix.lower() in (".heic", ".heif") or src.stat().st_size > 1_500_000:
+            tmp = Path("/tmp") / f"atlas-mcp-{src.stem}.jpg"
+            subprocess.run(["sips", "-s", "format", "jpeg", "--resampleWidth", "1200",
+                            str(src), "--out", str(tmp)], capture_output=True)
+            if tmp.exists():
+                src = tmp
+        return Image(path=str(src))
+
+    @mcp.tool()
+    def correct(fact: str) -> str:
+        """Fix something wrong in the wiki by stating the true fact in plain
+        words (e.g. "X and Y are two different people"). Attaches a durable
+        premise to the affected pages; the next build rewrites them as if the
+        fact had always been known. This is the ONLY way to change pages."""
+        from .corrections import add_correction
+        pages = add_correction(chat_dir, fact, verbose=False)
+        return (f"correction attached to: {', '.join(pages)} — pages will regenerate "
+                f"on the next build (`atlas update {chat_dir.name}`)")
+
+    return mcp
+
+
+def serve(chat_dir):
+    build_server(Path(chat_dir)).run()

@@ -27,6 +27,7 @@ from .faces import build_faces
 from .extract import build_observations
 from .render import render_site
 from .sync import sync_site
+from .mcp_server import serve
 
 
 def _config_flags(parser, config_cls):
@@ -191,6 +192,10 @@ def main(argv=None):
     f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
                                             Path("chats") / a.slug / "wiki",
                                             _config_from(a, FaceConfig)))
+
+    m = sub.add_parser("mcp", help="serve the wiki as an MCP server (stdio) for any AI client")
+    m.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
+    m.set_defaults(fn=lambda a: serve(Path("chats") / a.slug))
 
     u = sub.add_parser("update", help="one incremental pass: caption → extract → wiki → render → sync")
     u.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
