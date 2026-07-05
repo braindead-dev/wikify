@@ -101,10 +101,11 @@ def add_correction(chat_dir, text, config: ComposeConfig = None, verbose=True) -
                                    "aliases": np.get("aliases", []), "obs": list(src["obs"]),
                                    "status": "pending", "corrections": [directive]}
             pages.append(nid)
+    central = state.setdefault("corrections", [])
     for pid in pages:
         page = state["pages"][pid]
-        if directive not in page.setdefault("corrections", []):
-            page["corrections"].append(directive)
+        central.append({"anchor": pid, "directive": directive,
+                        "subjects": [page.get("title", "")] + page.get("aliases", [])})
         page["status"] = "pending"
         if kind == "rename" and out.get("retitle", {}).get("title"):
             old = page["title"]

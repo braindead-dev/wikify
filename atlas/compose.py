@@ -149,6 +149,22 @@ def _save_state(wiki_dir: Path, state) -> None:
 
 
 # ---------------------------------------------------------------- rendering
+def corrections_for(state, pid) -> list:
+    """Every correction premise that applies to this page. Corrections anchor to
+    SUBJECTS (title/alias names captured at attach time) plus their original
+    page id and its descendants — so they survive renames, splits, moves, and
+    full restructures. Legacy per-page lists still count."""
+    page = state["pages"].get(pid, {})
+    out = list(page.get("corrections", []))
+    names = {n.lower() for n in [page.get("title", "")] + page.get("aliases", []) if n}
+    for c in state.get("corrections", []):
+        anchored = pid == c.get("anchor") or pid.startswith(c.get("anchor", "\x00") + "/")
+        subject_hit = any(s.lower() in names for s in c.get("subjects", []))
+        if (anchored or subject_hit) and c["directive"] not in out:
+            out.append(c["directive"])
+    return out
+
+
 def workspace_header(db, chat_ids, msgs, participants) -> str:
     header = (f"WIKI WORKSPACE: a group chat of {len(participants)} people "
               f"({', '.join(participants)}), {msgs[0].ts.date()} to {msgs[-1].ts.date()}, "
@@ -508,13 +524,14 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg,
         if page.get("audit_issues"):
             user += ("\n\nAUDIT FINDINGS — fix each of these in the revision:\n- "
                      + "\n- ".join(page["audit_issues"]))
-    if page.get("corrections"):
+    premises = corrections_for(state, pid)
+    if premises:
         user += ("\n\nMAINTAINER-VERIFIED FACTS (authoritative — where the material "
                  "disagrees, these win). These are background premises, NOT subject "
                  "matter: never mention, acknowledge, or allude to them in the article. "
                  "No disambiguation asides, no 'is a distinct person from' notes, no "
                  "defensive clarifications — write exactly as if these facts had been "
-                 "obvious from the start:\n- " + "\n- ".join(page["corrections"]))
+                 "obvious from the start:\n- " + "\n- ".join(premises))
     user += "\n\nMATERIAL (observations with original messages):\n" + "\n".join(material)
     out = llm.complete_json(system, user, effort=cfg.effort, schema=article_schema(person),
                             schema_name="article", trace=trace, max_tokens=cfg.max_tokens,
