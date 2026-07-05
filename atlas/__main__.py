@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .caption import build_captions
 from .transcribe import build_transcripts
+from .bench import run_bench
 from .compose import audit_pages, build_wiki, replan
 from .corrections import add_correction
 from .config import ComposeConfig, ExtractConfig, FaceConfig
@@ -208,6 +209,11 @@ def main(argv=None):
     f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
                                             Path("chats") / a.slug / "wiki",
                                             _config_from(a, FaceConfig)))
+
+    be = sub.add_parser("bench", help="retrieval benchmark: LLM probes → hit@1/hit@5/MRR")
+    be.add_argument("slug")
+    be.add_argument("--n", type=int, default=40)
+    be.set_defaults(fn=lambda a: run_bench(Path("chats") / a.slug, n=a.n))
 
     m = sub.add_parser("mcp", help="serve the wiki as an MCP server (stdio) for any AI client")
     m.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")

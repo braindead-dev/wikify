@@ -22,6 +22,8 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Image
 
 from sources.fetch import fetch, parse_specs
+
+from .retrieval import bm25_find, bm25_index
 from sources.imessage.render import format_message
 
 INSTRUCTIONS = """This server is a cited wiki built from a real conversation history
@@ -184,32 +186,8 @@ def build_server(chat_dir: Path) -> FastMCP:
 
     def _bm25_index():
         mtime = max((f.stat().st_mtime for f in page_files()), default=0)
-        if cache.get("bm25_mtime") == mtime:
-            return cache["bm25"]
-        import math
-        docs = {}
-        st = state()
-        for pid, pg in st["pages"].items():
-            if pg["status"] != "written":
-                continue
-            path = wiki_dir / (pid + ".md")
-            body = path.read_text().lower() if path.exists() else ""
-            head = (pid.replace("/", " ") + " " + pg["title"] + " "
-                    + " ".join(pg.get("aliases", []))).lower()
-            tf = {}
-            for t in re.findall(r"[a-z0-9']+", head):        # title/alias field x4
-                tf[t] = tf.get(t, 0) + 4
-            for t in re.findall(r"[a-z0-9']+", body):
-                tf[t] = tf.get(t, 0) + 1
-            docs[pid] = (tf, sum(tf.values()), pg["title"])
-        n = len(docs) or 1
-        avg = sum(l for _, l, _ in docs.values()) / n
-        df = {}
-        for tf, _, _ in docs.values():
-            for t in tf:
-                df[t] = df.get(t, 0) + 1
-        idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
-        cache.update(bm25=(docs, idf, avg), bm25_mtime=mtime)
+        if cache.get("bm25_mtime") != mtime:
+            cache.update(bm25=bm25_index(state(), wiki_dir), bm25_mtime=mtime)
         return cache["bm25"]
 
     @mcp.tool()
@@ -217,22 +195,9 @@ def build_server(chat_dir: Path) -> FastMCP:
         """Ranked page lookup (BM25, title-weighted) for natural-language queries
         ("the road trip where the car broke"). Use this when you don't know exact
         wording; use `search` for exact/regex matches."""
-        terms = [t for t in re.findall(r"[a-z0-9']+", query.lower()) if len(t) > 2]
-        if not terms:
-            return "give me a few content words"
-        docs, idf, avg = _bm25_index()
-        k1, b = 1.4, 0.6
-        scored = []
-        for pid, (tf, length, title) in docs.items():
-            sc = 0.0
-            for t in terms:
-                f = tf.get(t, 0)
-                if f:
-                    sc += idf.get(t, 0) * f * (k1 + 1) / (f + k1 * (1 - b + b * length / avg))
-            if sc > 0:
-                scored.append((sc, f"{pid}  '{title}'  ({sc:.1f})"))
-        scored.sort(reverse=True)
-        return "\n".join(line for _, line in scored[:max_results]) or "nothing scored — try search()"
+        hits = bm25_find(_bm25_index(), query, k=max_results)
+        return "\n".join(f"{pid}  '{title}'  ({sc:.1f})" for sc, pid, title in hits) \
+            or "nothing scored — try search()"
 
     @mcp.tool()
     def related(page: str, max_results: int = 12) -> str:
