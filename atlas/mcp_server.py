@@ -24,7 +24,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from sources.fetch import fetch, parse_specs
 
 from .retrieval import bm25_find, bm25_index
-from .store_db import fts_search, load_items, log_access
+from .store_db import fts_search, item, item_window, load_items, log_access, max_ts
 from sources.imessage.render import format_message
 
 INSTRUCTIONS = """{subject}
@@ -130,13 +130,7 @@ def build_server(chat_dir: Path) -> FastMCP:
                   [f"Instagram thread {k}" for k in ig_keys] + \
                   [f"documents {r}" for r in file_roots]
         built = datetime.fromtimestamp((wiki_dir / "plan.json").stat().st_mtime)
-        msgs, _ = messages()
-        last_seen = {}
-        for m in msgs:
-            block = m.rowid // 1_000_000
-            if m.ts > last_seen.get(block, datetime.min):
-                last_seen[block] = m.ts
-        freshest = max(last_seen.values()) if last_seen else None
+        freshest = max_ts(chat_dir)
         lines = [f"WIKI: {chat_dir.name} · {len(pages)} pages · "
                  f"{d['count']} observations from {', '.join(sources)}",
                  f"last build: {built:%Y-%m-%d %H:%M} · newest message: "
@@ -172,10 +166,9 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(out) or f"no pages under {prefix!r}"
 
     def _freshness(text: str) -> str:
-        _, by_id = messages()
-        stamps = [by_id[int(i)].ts for i in re.findall(r"\[#(\d+)", text)
-                  if int(i) in by_id]
-        return f"{max(stamps):%Y-%m-%d}" if stamps else "?"
+        ids = [int(i) for i in re.findall(r"\[#(\d+)", text)]
+        newest = max_ts(chat_dir, ids[:900]) if ids else None
+        return f"{newest:%Y-%m-%d}" if newest else "?"
 
     @mcp.tool()
     @_logged
@@ -310,23 +303,19 @@ def build_server(chat_dir: Path) -> FastMCP:
     def resolve(citation: int, context: int = 4) -> str:
         """Resolve a [#id] citation to the original message with surrounding
         conversation — the ground truth behind any wiki claim."""
-        msgs, by_id = messages()
-        if citation not in by_id:
+        window = item_window(chat_dir, citation, context)
+        if not window:
             return f"no message #{citation}"
-        idx = msgs.index(by_id[citation])
-        out = []
-        for m in msgs[max(0, idx - context):idx + context + 1]:
-            marker = "►" if m.rowid == citation else " "
-            out.append(f"{marker} {format_message(m, ids=True, with_date=True)}")
-        return "\n".join(out)
+        return "\n".join(
+            f"{'►' if m.rowid == citation else ' '} "
+            + format_message(m, ids=True, with_date=True) for m in window)
 
     @mcp.tool()
     @_logged
     def get_image(message_id: int) -> Image:
         """Fetch the photo attached to a message (find message ids via search
         or page citations near [img: …] captions)."""
-        _, by_id = messages()
-        m = by_id.get(message_id)
+        m = item(chat_dir, message_id)
         paths = [p for p in (m.attachment_paths if m else []) if p and Path(p).exists()]
         if not paths:
             raise ValueError(f"no image on message #{message_id}")
@@ -353,8 +342,7 @@ def build_server(chat_dir: Path) -> FastMCP:
                 text = path.read_text()
                 material.append(f"=== {pid} (cited through {_freshness(text)}) ===\n"
                                 + text[:8000])
-        msgs, _ = messages()
-        return (f"RECORD ENDS: {max(m.ts for m in msgs):%Y-%m-%d} — anything after "
+        return (f"RECORD ENDS: {max_ts(chat_dir):%Y-%m-%d} — anything after "
                 "this date is outside the knowledge base.\n\n" + "\n\n".join(material))
 
     @mcp.tool(description=f"Assembled context for any question about {short}: the most "

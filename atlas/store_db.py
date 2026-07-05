@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
     text, content='items', content_rowid='id', tokenize='porter unicode61');
+"""
+
+_LOG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS access_log (
     ts        TEXT NOT NULL,
     channel   TEXT NOT NULL,               -- e.g. mcp/claude-ai, cli
@@ -50,6 +53,15 @@ def open_db(chat_dir) -> sqlite3.Connection:
     con = sqlite3.connect(path, check_same_thread=False)
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(_SCHEMA)
+    return con
+
+
+def open_log_db(chat_dir) -> sqlite3.Connection:
+    """The audit trail lives in its own file so log writes never perturb the
+    item store (or its mtime-keyed caches)."""
+    con = sqlite3.connect(Path(chat_dir) / "log.db", check_same_thread=False)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.executescript(_LOG_SCHEMA)
     return con
 
 
@@ -115,7 +127,7 @@ def fts_search(chat_dir, query, limit=40, since="", until=""):
 def log_access(chat_dir, channel, tool, args, returned, ms) -> None:
     """One audit row. Args/returned are truncated summaries, never payloads."""
     try:
-        con = open_db(chat_dir)
+        con = open_log_db(chat_dir)
         with con:
             con.execute("INSERT INTO access_log VALUES (?,?,?,?,?,?)",
                         (time.strftime("%Y-%m-%d %H:%M:%S"), channel, tool,
@@ -127,11 +139,50 @@ def log_access(chat_dir, channel, tool, args, returned, ms) -> None:
 
 
 def read_log(chat_dir, tail=30) -> list:
-    path = Path(chat_dir) / "store.db"
+    path = Path(chat_dir) / "log.db"
     if not path.exists():
         return []
-    con = open_db(chat_dir)
+    con = open_log_db(chat_dir)
     rows = con.execute("SELECT * FROM access_log ORDER BY ts DESC, rowid DESC LIMIT ?",
                        (tail,)).fetchall()
     con.close()
     return rows[::-1]
+
+
+def item(chat_dir, item_id):
+    """One item by id, or None."""
+    con = open_db(chat_dir)
+    row = con.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+    con.close()
+    return _row_to_message(row) if row else None
+
+
+def item_window(chat_dir, item_id, context=4):
+    """The item plus its chronological neighbors (same conversation flow)."""
+    con = open_db(chat_dir)
+    row = con.execute("SELECT ts FROM items WHERE id = ?", (item_id,)).fetchone()
+    if not row:
+        con.close()
+        return []
+    before = con.execute(
+        "SELECT * FROM items WHERE ts <= ? AND id != ? ORDER BY ts DESC, id DESC LIMIT ?",
+        (row[0], item_id, context)).fetchall()[::-1]
+    target = con.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+    after = con.execute(
+        "SELECT * FROM items WHERE ts >= ? AND id != ? ORDER BY ts, id LIMIT ?",
+        (row[0], item_id, context)).fetchall()
+    con.close()
+    return [_row_to_message(r) for r in before + [target] + after]
+
+
+def max_ts(chat_dir, ids=None):
+    """Newest item timestamp — overall, or among specific ids."""
+    con = open_db(chat_dir)
+    if ids:
+        marks = ",".join("?" * len(ids))
+        row = con.execute(f"SELECT max(ts) FROM items WHERE id IN ({marks})",
+                          list(ids)).fetchone()
+    else:
+        row = con.execute("SELECT max(ts) FROM items").fetchone()
+    con.close()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
