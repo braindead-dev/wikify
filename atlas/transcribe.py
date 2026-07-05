@@ -47,15 +47,29 @@ def _save(cache) -> None:
 
 
 def _wav_b64(path: str) -> str:
-    """Normalize any audio (caf/amr/m4a/mp4) to 16k mono wav via afconvert."""
+    """Normalize any audio (caf/amr/m4a/mp4) to 16k mono wav via afconvert.
+    Extensions lie (Instagram ships mp4 containers named .aac) — sniff the
+    container magic and feed afconvert a correctly-suffixed copy."""
+    raw = Path(path).read_bytes()
+    suffix = Path(path).suffix or ".m4a"
+    if raw[4:8] == b"ftyp":
+        suffix = ".mp4"
+    elif raw[:4] == b"caff":
+        suffix = ".caf"
+    elif raw[:4] == b"RIFF":
+        suffix = ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as src:
+        src.write(raw)
+        src_path = src.name
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         out = tmp.name
     try:
         subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1",
-                        path, out], capture_output=True, check=True, timeout=60)
+                        src_path, out], capture_output=True, check=True, timeout=60)
         data = Path(out).read_bytes()
     finally:
         Path(out).unlink(missing_ok=True)
+        Path(src_path).unlink(missing_ok=True)
     if len(data) > _MAX_BYTES:
         raise ValueError("audio too long")
     return base64.b64encode(data).decode()
