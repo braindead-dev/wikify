@@ -18,7 +18,12 @@ def bm25_index(state, wiki_dir: Path):
         path = wiki_dir / (pid + ".md")
         body = path.read_text().lower() if path.exists() else ""
         head = (pid.replace("/", " ") + " " + pg["title"] + " "
-                + " ".join(pg.get("aliases", []))).lower()
+                + " ".join(pg.get("aliases", [])))
+        if pid.count("/") >= 2:              # sub-pages are about their parent's
+            parent = state["pages"].get("/".join(pid.split("/")[:2]))  # subject too
+            if parent:
+                head += " " + parent["title"] + " " + " ".join(parent.get("aliases", []))
+        head = head.lower()
         tf = {}
         for t in _WORD.findall(head):
             tf[t] = tf.get(t, 0) + 4
