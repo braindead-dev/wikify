@@ -143,9 +143,13 @@ def build_server(chat_dir: Path) -> FastMCP:
         for dirname, pids in sorted(by_dir.items()):
             if len(pages) > 400:                    # overflow: one line per directory
                 lines.append(f"{dirname}/ — {len(pids)} pages (list_pages('{dirname}'))")
-            else:
-                lines.append(f"{dirname}/")
-                lines += [f"  {pid}  \"{pages[pid]['title']}\"" for pid in sorted(pids)]
+                continue
+            lines.append(f"{dirname}/")
+            for pid in sorted(pids):                # indent sub-pages under parents
+                depth = pid.count("/") - 1
+                name = pid if depth == 0 else pid.rsplit("/", 1)[1]
+                lines.append(f"{'  ' * (depth + 1)}{name}  \"{pages[pid]['title']}\""
+                             + ("" if depth == 0 else f"  [{pid}]"))
         index = wiki_dir / "index.md"
         if index.exists():
             lines += ["", "MAIN PAGE:", index.read_text()[:3000]]
@@ -285,7 +289,8 @@ def build_server(chat_dir: Path) -> FastMCP:
                     if shared:
                         scores[pid] = scores.get(pid, 0) + min(shared, 10)
         ranked = sorted(((v, k) for k, v in scores.items() if k in st["pages"]), reverse=True)
-        return "\n".join(f"{k}  ({v})" for v, k in ranked[:max_results]) or "no neighbors"
+        return "\n".join(f"{k}  \"{st['pages'][k]['title']}\"  ({v})"
+                          for v, k in ranked[:max_results]) or "no neighbors"
 
     @mcp.tool()
     @_logged
@@ -294,8 +299,13 @@ def build_server(chat_dir: Path) -> FastMCP:
         (often surfaces context that text search misses)."""
         target = page.removesuffix(".md")
         rx = re.compile(r"\[\[" + re.escape(target) + r"[|\]]")
-        out = [str(f.relative_to(wiki_dir).with_suffix(""))
-               for f in page_files() if rx.search(f.read_text())]
+        st = state()
+        out = []
+        for f in page_files():
+            pid = str(f.relative_to(wiki_dir).with_suffix(""))
+            if rx.search(f.read_text()):
+                title = st["pages"].get(pid, {}).get("title", "")
+                out.append(f"{pid}  \"{title}\"")
         return "\n".join(out) or f"no pages link to {target}"
 
     @mcp.tool()
