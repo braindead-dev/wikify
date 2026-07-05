@@ -168,19 +168,33 @@ def _assign_among(llm, parent, options, items, cfg, trace):
     system = ("You organize a wiki page that grew too large into its sub-pages. "
               "Assign EVERY observation to the single best-fitting page. The parent "
               "page keeps only framing/overview material that belongs to no sub-page.")
-    out = {}
-    for start in range(0, len(items), cfg.route_batch):
-        batch = items[start:start + cfg.route_batch]
+    batches = [items[i:i + cfg.route_batch] for i in range(0, len(items), cfg.route_batch)]
+
+    def one(batch):
         lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(batch))
-        res = llm.complete_json(system, f"PAGES:\n" + "\n".join(sorted(options))
+        res = llm.complete_json(system, "PAGES:\n" + "\n".join(sorted(options))
                                 + f"\n\nOBSERVATIONS:\n{lines}\n\nAssign every observation.",
                                 effort="low", schema=schema, schema_name="assign",
                                 trace=trace, max_tokens=cfg.max_tokens,
                                 temperature=cfg.temperature)
-        for a in (res.get("assignments") or []):
-            n = a.get("n")
-            if isinstance(n, int) and 0 <= n < len(batch):
-                out[batch[n][0]] = a["page"]
+        return batch, res
+
+    out = {}
+    workers = cfg.workers or len(batches)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(one, b) for b in batches]
+        for i, fut in enumerate(as_completed(futures)):
+            try:
+                batch, res = fut.result()
+            except Exception:
+                continue                       # unassigned items default to parent
+            for a in (res.get("assignments") or []):
+                n = a.get("n")
+                if isinstance(n, int) and 0 <= n < len(batch):
+                    out[batch[n][0]] = a["page"]
+            print(f"\r  [assign] {parent}: {i + 1}/{len(batches)} batches", end="", flush=True)
+    if batches:
+        print(flush=True)
     for k, _ in items:
         out.setdefault(k, parent)
     return out
@@ -211,6 +225,9 @@ def split_overflow_pages(llm, state, keyed, by_id, workspace, cfg, trace, verbos
                 overflow.append(pid)
         if not overflow:
             break
+        if verbose:
+            print(f"[split] {len(overflow)} pages exceed the density budget: "
+                  f"{', '.join(overflow)}", flush=True)
         for pid in overflow:
             page = state["pages"][pid]
             stride = max(1, len(page["obs"]) // 300)
