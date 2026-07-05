@@ -36,7 +36,7 @@ USE THESE TOOLS whenever the user mentions this group or any of these people,
 or asks about their history, jokes, events, relationships, or anything this
 corpus could know — none of it is in your training data, all of it is here.
 
-Start with `overview` (page tree + freshness). Read pages before searching —
+Start with `overview` (page tree + freshness). For deep questions call `context` and synthesize the answer yourself; `answer` is a quick server-side one-shot. Read pages before searching —
 the wiki is the synthesized layer and usually answers directly. Drop to
 `search` over observations/messages when the wiki lacks detail; use `resolve`
 to quote the original messages behind any [#id] citation.
@@ -339,30 +339,45 @@ def build_server(chat_dir: Path) -> FastMCP:
                 src = tmp
         return Image(path=str(src))
 
-    @mcp.tool(description=f"Synthesized, cited answer to any question about this "
-              f"knowledge base's subject ({short}) — retrieves, reads, and writes the "
-              "answer with citations plus gaps/staleness notes.")
-    @_logged
-    def answer(question: str) -> str:
-        """Synthesized, cited answer to a question — retrieves the most relevant
-        pages, reads them, and writes the answer with [#id] citations plus an
-        explicit note on what the knowledge base does NOT cover (gaps and
-        staleness). Prefer this for direct questions; use read/search tools when
-        you want to explore yourself."""
-        from .llm import LLMClient
-        top = find(question, max_results=5)
+    def _gather(question: str, k: int = 6) -> str:
+        """The retrieval half shared by `context` and `answer`: the most relevant
+        pages assembled into one block, each headed with its freshness."""
+        top = find(question, max_results=k + 2)
         if "nothing scored" in top:
-            return "the knowledge base has nothing on this — note that as the answer"
-        pids = [line.split()[0] for line in top.splitlines()]
+            return ""
         material = []
-        for pid in pids[:4]:
+        for line in top.splitlines()[:k]:
+            pid = line.split()[0]
             path = wiki_dir / (pid + ".md")
             if path.exists():
                 text = path.read_text()
                 material.append(f"=== {pid} (cited through {_freshness(text)}) ===\n"
-                                + text[:9000])
+                                + text[:8000])
         msgs, _ = messages()
-        newest = max(m.ts for m in msgs)
+        return (f"RECORD ENDS: {max(m.ts for m in msgs):%Y-%m-%d} — anything after "
+                "this date is outside the knowledge base.\n\n" + "\n\n".join(material))
+
+    @mcp.tool(description=f"Assembled context for a question about {short}: the most "
+              "relevant pages, freshness-annotated, for YOU to synthesize from. "
+              "Prefer this for deep or multi-part questions — you answer, it retrieves.")
+    @_logged
+    def context(question: str, max_pages: int = 6) -> str:
+        """The most relevant pages for a question, assembled raw — no synthesis.
+        Citations ([#id]) resolve via `resolve`."""
+        return _gather(question, k=max_pages) or \
+            "the knowledge base has nothing on this — note that as the answer"
+
+    @mcp.tool(description=f"Quick synthesized, cited answer about {short} — server-side "
+              "one-shot; for deep or multi-part questions prefer `context` and "
+              "synthesize yourself.")
+    @_logged
+    def answer(question: str) -> str:
+        """Synthesized, cited answer — retrieves the most relevant pages and writes
+        the answer with [#id] citations plus a gaps/staleness note."""
+        from .llm import LLMClient
+        material = _gather(question, k=4)
+        if not material:
+            return "the knowledge base has nothing on this — note that as the answer"
         llm = LLMClient()
         out = llm.complete_json(
             "You answer questions from a cited personal knowledge base. Use ONLY the "
@@ -370,10 +385,9 @@ def build_server(chat_dir: Path) -> FastMCP:
             "End with a short 'What this doesn't cover' note when relevant: gaps, and "
             "staleness (the record ends at the date given — anything after is unknown). "
             "Be direct and specific. JSON only.",
-            f"QUESTION: {question}\n\nRECORD ENDS: {newest:%Y-%m-%d}\n\n"
-            + "\n\n".join(material)
+            f"QUESTION: {question}\n\n{material}"
             + '\n\nReturn JSON: {"answer": "..."}',
-            effort="low", temperature=0.2, max_tokens=4000)
+            effort="none", temperature=0.2, max_tokens=9000)
         return str(out.get("answer", "")).strip() or "synthesis failed — read the pages directly"
 
     @mcp.tool()
