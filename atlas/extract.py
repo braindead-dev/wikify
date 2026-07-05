@@ -17,6 +17,7 @@ from sources.fetch import fetch_streams
 from sources.imessage.render import format_message
 
 from .caption import load_captions
+from .transcribe import load_transcripts
 from .config import ExtractConfig
 from .llm import LLMClient
 from .observation import Observation, observations_schema
@@ -137,7 +138,8 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
                    ") — the same people throughout. Each slice you receive is "
                    "from one channel, named at the top.")
     schema = observations_schema(participants)
-    chunks = chunk_streams(streams, config.chunk_tokens, config.overlap_tokens, load_captions())
+    chunks = chunk_streams(streams, config.chunk_tokens, config.overlap_tokens,
+                           {**load_captions(), **load_transcripts()})
 
     specs = [int(s) if str(s).isdigit() else str(s) for s in chat_ids]
     meta = {"chat_ids": specs, "model": config.model,

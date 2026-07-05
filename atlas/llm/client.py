@@ -102,7 +102,7 @@ class LLMClient:
 
     def complete_json(self, system: str, user: str, effort=None, schema=None,
                       schema_name="output", trace=None, max_tokens=None, temperature=None,
-                      images=None):
+                      images=None, audio=None):
         """Return parsed JSON from the model. When `schema` is given, use genuine
         structured outputs (response_format=json_schema, strict) so the model is
         constrained to the schema at decode time — not merely asked to emit JSON.
@@ -114,8 +114,9 @@ class LLMClient:
         If `trace` is given it is called with a full record of the request and
         outcome (model, params, exact prompt, raw output, finish reason)."""
         content = user
-        if images:
-            content = ([{"type": "image_url", "image_url": {"url": u}} for u in images]
+        if images or audio:
+            content = ([{"type": "image_url", "image_url": {"url": u}} for u in (images or [])]
+                       + [{"type": "input_audio", "input_audio": a} for a in (audio or [])]
                        + [{"type": "text", "text": user}])
         messages = [{"role": "system", "content": system},
                     {"role": "user", "content": content}]

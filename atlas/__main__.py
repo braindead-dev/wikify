@@ -20,6 +20,7 @@ from dataclasses import fields
 from pathlib import Path
 
 from .caption import build_captions
+from .transcribe import build_transcripts
 from .compose import audit_pages, build_wiki
 from .corrections import add_correction
 from .config import ComposeConfig, ExtractConfig, FaceConfig
@@ -140,6 +141,7 @@ def cmd_update(args):
         return
     ids = _chat_ids(args, chat_dir)
     build_captions(ids)
+    build_transcripts(ids)
     build_observations(chat_dir, ids, ExtractConfig())
     build_wiki(chat_dir, ComposeConfig())
     if (chat_dir / "sync.json").exists() or args.to:
@@ -183,6 +185,15 @@ def main(argv=None):
     c.add_argument("--workers", type=int, default=32)
     c.add_argument("--limit", type=int, help="only caption this many (for trying things out)")
     c.set_defaults(fn=lambda a: build_captions(
+        _chat_ids(a, Path("chats") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
+
+    tr = sub.add_parser("transcribe", help="transcribe audio attachments so extraction hears them")
+    tr.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
+    tr.add_argument("--chats", help="comma-separated chat specs (defaults to the manifest's)")
+    tr.add_argument("--model", default="gemini-flash")
+    tr.add_argument("--workers", type=int, default=16)
+    tr.add_argument("--limit", type=int)
+    tr.set_defaults(fn=lambda a: build_transcripts(
         _chat_ids(a, Path("chats") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
 
     f = sub.add_parser("faces", help="cluster faces in photos; owner names them via questions")
