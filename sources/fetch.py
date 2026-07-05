@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .imessage import MessagesDB
+from .files import FilesSource
 from .instagram import InstagramExport
 
 
@@ -20,17 +21,20 @@ def _identities():
 
 
 def parse_specs(specs) -> tuple:
-    """Split mixed chat specs into (imessage row ids, instagram thread keys)."""
-    im_ids, ig_keys = [], []
+    """Split mixed specs into (imessage row ids, instagram thread keys, file folders)."""
+    im_ids, ig_keys, file_roots = [], [], []
     for spec in specs:
         s = str(spec).strip()
         if s.startswith("ig:"):
             ig_keys.append(s[3:])
+        elif s.startswith("files:"):
+            file_roots.append(s[6:])
         elif s.isdigit():
             im_ids.append(int(s))
         else:
-            raise ValueError(f"unknown chat spec {s!r} — use a chat row id or ig:<thread>")
-    return im_ids, ig_keys
+            raise ValueError(f"unknown spec {s!r} — use a chat row id, ig:<thread>, "
+                             "or files:<folder>")
+    return im_ids, ig_keys, file_roots
 
 
 def fetch_streams(specs, until=None):
@@ -40,16 +44,21 @@ def fetch_streams(specs, until=None):
     never interleave in one transcript, while ids and timestamps keep the
     overall record one timeline. iMessage row ids passed together are treated
     as one stream (sequential eras of the same chat)."""
-    im_ids, ig_keys = parse_specs(specs)
+    im_ids, ig_keys, file_roots = parse_specs(specs)
     streams, db = [], None
     if im_ids:
         db = MessagesDB(identities=_identities())
-        streams.append({"label": "iMessage", "messages": db.messages(im_ids, until=until)})
+        streams.append({"label": "iMessage", "kind": "chat",
+                        "messages": db.messages(im_ids, until=until)})
     if ig_keys:
         export = InstagramExport()
         for key in ig_keys:
-            streams.append({"label": f"Instagram · {export.title(key)}",
+            streams.append({"label": f"Instagram · {export.title(key)}", "kind": "chat",
                             "messages": export.thread_messages(key, until=until)})
+    for root in file_roots:
+        src = FilesSource(root)
+        streams.append({"label": f"Documents · {src.root.name}", "kind": "document",
+                        "messages": src.messages(until=until)})
     return [s for s in streams if s["messages"]], db
 
 

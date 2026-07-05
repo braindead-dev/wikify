@@ -70,9 +70,10 @@ def build_server(chat_dir: Path) -> FastMCP:
         this first in every session."""
         s, d = state(), data()
         pages = {pid: p for pid, p in s["pages"].items() if p["status"] == "written"}
-        im_ids, ig_keys = parse_specs(d["chat_ids"])
+        im_ids, ig_keys, file_roots = parse_specs(d["chat_ids"])
         sources = ([f"iMessage chats {im_ids}"] if im_ids else []) + \
-                  [f"Instagram thread {k}" for k in ig_keys]
+                  [f"Instagram thread {k}" for k in ig_keys] + \
+                  [f"documents {r}" for r in file_roots]
         built = datetime.fromtimestamp((wiki_dir / "plan.json").stat().st_mtime)
         msgs, _ = messages()
         last_seen = {}

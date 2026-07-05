@@ -24,6 +24,7 @@ from .observation import Observation, observations_schema
 from .store import RunStore
 
 _PROMPT = Path(__file__).resolve().parent / "prompts" / "extract.md"
+_DOC_PROMPT = Path(__file__).resolve().parent / "prompts" / "extract_document.md"
 
 
 def _toks(s: str) -> int:
@@ -77,11 +78,16 @@ def chunk_messages(messages, chunk_tokens, overlap_tokens, captions=None, stream
 
 def chunk_streams(streams, chunk_tokens, overlap_tokens, captions=None) -> list:
     """Chunk every stream independently (parallel channels never interleave in a
-    transcript) and concatenate in stream order — one flat chunk list."""
+    transcript) and concatenate in stream order — one flat chunk list. Each chunk
+    carries its stream's kind (chat/document) so extraction can shape its prompt
+    and schema per kind."""
     out = []
     for s in streams:
-        out += chunk_messages(s["messages"], chunk_tokens, overlap_tokens,
-                              captions, stream=s["label"] if len(streams) > 1 else "")
+        chunks = chunk_messages(s["messages"], chunk_tokens, overlap_tokens,
+                                captions, stream=s["label"] if len(streams) > 1 else "")
+        for c in chunks:
+            c["kind"] = s.get("kind", "chat")
+        out += chunks
     return out
 
 
@@ -130,14 +136,20 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     streams, db = fetch_streams(chat_ids, until=until)
     msgs = [m for s in streams for m in s["messages"]]
     valid_ids = {m.rowid for m in msgs}
-    participants = _participants(msgs)
-    system = system_prompt(db, msgs)
+    chat_msgs = [m for st in streams if st.get("kind", "chat") == "chat"
+                 for m in st["messages"]]
+    participants = _participants(chat_msgs or msgs)
+    system = system_prompt(db, chat_msgs or msgs)
     if len(streams) > 1:
-        system += ("\n\nThis group talks across several channels (" +
+        system += ("\n\nThis record spans several channels (" +
                    "; ".join(s["label"] for s in streams) +
                    ") — the same people throughout. Each slice you receive is "
                    "from one channel, named at the top.")
+    doc_system = _DOC_PROMPT.read_text().replace(
+        "{contacts}", "known people: " + ", ".join(participants)) if any(
+        st.get("kind") == "document" for st in streams) else None
     schema = observations_schema(participants)
+    doc_schema = observations_schema(None)
     chunks = chunk_streams(streams, config.chunk_tokens, config.overlap_tokens,
                            {**load_captions(), **load_transcripts()})
 
@@ -176,11 +188,13 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         """One chunk, with the variance gate: a run that lands far under the
         expected observation density is a lazy sample, not a sparse chunk —
         take one more sample and keep the richer result."""
+        doc = chunks[i].get("kind") == "document"
+        sys_i, schema_i = (doc_system, doc_schema) if doc else (system, schema)
         kw = dict(effort=config.effort, max_tokens=config.max_tokens or None,
                   trace=trace_sink(i), temperature=config.temperature)
-        obs = extract_chunk(llm, system, chunks[i]["text"], schema, **kw)
+        obs = extract_chunk(llm, sys_i, chunks[i]["text"], schema_i, **kw)
         if len(obs) < config.min_density * chunks[i]["n_messages"]:
-            retry = extract_chunk(llm, system, chunks[i]["text"], schema, **kw)
+            retry = extract_chunk(llm, sys_i, chunks[i]["text"], schema_i, **kw)
             if len(retry) > len(obs):
                 obs = retry
         return obs
@@ -191,8 +205,9 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         for fut in as_completed(futures):
             i = futures[fut]
             try:
+                allowed = None if chunks[i].get("kind") == "document" else participants
                 store.write_chunk(i, [c for o in fut.result()
-                                      if (c := o.cleaned(valid_ids, participants))])
+                                      if (c := o.cleaned(valid_ids, allowed))])
             except Exception as e:
                 store.mark_failed(i, e)
                 if verbose:

@@ -83,7 +83,8 @@ class Observation:
         that are real message ids and people who are real participants, and requires
         a title, a detail, and at least one real source."""
         sources = [s for s in dict.fromkeys(self.sources) if s in valid_ids]
-        people = [p for p in dict.fromkeys(self.people) if p in participants]
+        people = [p for p in dict.fromkeys(self.people)
+                  if participants is None or p in participants]
         if not (self.title and self.detail and sources):
             return None
         return replace(self, sources=sources, people=people)
@@ -91,8 +92,9 @@ class Observation:
 
 def observations_schema(participants) -> dict:
     """The structured-output schema for one extraction call, generated from
-    `FIELDS`. `people` is a strict enum of the chat's participants; every
-    observation must carry at least one source."""
+    `FIELDS`. `people` is a strict enum of the chat's participants — or free
+    strings when `participants` is None (document sources mention people who
+    never speak). Every observation must carry at least one source."""
     return {
         "type": "object",
         "additionalProperties": False,
@@ -112,7 +114,8 @@ def observations_schema(participants) -> dict:
                                     "items": {"type": "integer"},
                                     "description": FIELDS["sources"]},
                         "people": {"type": "array",
-                                   "items": {"type": "string", "enum": list(participants)},
+                                   "items": ({"type": "string", "enum": list(participants)}
+                                             if participants else {"type": "string"}),
                                    "description": FIELDS["people"]},
                     },
                 },
