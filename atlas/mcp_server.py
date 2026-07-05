@@ -36,7 +36,7 @@ USE THESE TOOLS whenever the user mentions this group or any of these people,
 or asks about their history, jokes, events, relationships, or anything this
 corpus could know — none of it is in your training data, all of it is here.
 
-Start with `overview` (page tree + freshness). For deep questions call `context` and synthesize the answer yourself; `answer` is a quick server-side one-shot. Read pages before searching —
+Start with `overview` (page tree + freshness). For questions, call `context` and synthesize the answer yourself from the returned pages — cite the [#id]s you use. Read pages before searching —
 the wiki is the synthesized layer and usually answers directly. Drop to
 `search` over observations/messages when the wiki lacks detail; use `resolve`
 to quote the original messages behind any [#id] citation.
@@ -357,9 +357,9 @@ def build_server(chat_dir: Path) -> FastMCP:
         return (f"RECORD ENDS: {max(m.ts for m in msgs):%Y-%m-%d} — anything after "
                 "this date is outside the knowledge base.\n\n" + "\n\n".join(material))
 
-    @mcp.tool(description=f"Assembled context for a question about {short}: the most "
-              "relevant pages, freshness-annotated, for YOU to synthesize from. "
-              "Prefer this for deep or multi-part questions — you answer, it retrieves.")
+    @mcp.tool(description=f"Assembled context for any question about {short}: the most "
+              "relevant pages, freshness-annotated, for YOU to synthesize from — "
+              "you answer, it retrieves. Cite the [#id]s you use.")
     @_logged
     def context(question: str, max_pages: int = 6) -> str:
         """The most relevant pages for a question, assembled raw — no synthesis.
@@ -367,28 +367,6 @@ def build_server(chat_dir: Path) -> FastMCP:
         return _gather(question, k=max_pages) or \
             "the knowledge base has nothing on this — note that as the answer"
 
-    @mcp.tool(description=f"Quick synthesized, cited answer about {short} — server-side "
-              "one-shot; for deep or multi-part questions prefer `context` and "
-              "synthesize yourself.")
-    @_logged
-    def answer(question: str) -> str:
-        """Synthesized, cited answer — retrieves the most relevant pages and writes
-        the answer with [#id] citations plus a gaps/staleness note."""
-        from .llm import LLMClient
-        material = _gather(question, k=4)
-        if not material:
-            return "the knowledge base has nothing on this — note that as the answer"
-        llm = LLMClient()
-        out = llm.complete_json(
-            "You answer questions from a cited personal knowledge base. Use ONLY the "
-            "pages provided. Keep every [#id] citation that supports a claim you use. "
-            "End with a short 'What this doesn't cover' note when relevant: gaps, and "
-            "staleness (the record ends at the date given — anything after is unknown). "
-            "Be direct and specific. JSON only.",
-            f"QUESTION: {question}\n\n{material}"
-            + '\n\nReturn JSON: {"answer": "..."}',
-            effort="none", temperature=0.2, max_tokens=9000)
-        return str(out.get("answer", "")).strip() or "synthesis failed — read the pages directly"
 
     @mcp.tool()
     @_logged
