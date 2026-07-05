@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "imessage-analysis"
+name = "wikify"
 version = "0.1.0"
 description = "Read your local iMessage history (imessage) and build a wiki over it (atlas)."
 requires-python = ">=3.9"

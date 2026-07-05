@@ -1,6 +1,7 @@
-# imessage analysis
+# wikify
 
-Ingestion sources + a wiki builder over your own chat history:
+Turn any conversation history into a cited, browsable wiki — ingestion
+sources + the atlas pipeline:
 
 - **`sources/`** — ingestors, one folder per platform. `sources/imessage` reads
   the local Messages database faithfully, as a **CLI** (`imsg`) or **SDK** (this
