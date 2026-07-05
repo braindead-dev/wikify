@@ -15,13 +15,23 @@ sources + the atlas pipeline:
   ```bash
   python3 -m sources chats                             # list chats across all sources
   python3 -m sources show 61280042                     # resolve any citation id
-  python3 -m atlas caption my-chat --chats 101,ig:x    # optional: vision-caption images
-  python3 -m atlas extract my-chat --chats 101,ig:x    # L1: chat → observations
+  python3 -m atlas caption my-chat --chats 101,ig:x    # vision-caption images
+  python3 -m atlas transcribe my-chat                  # transcribe voice notes / audio
+  python3 -m atlas extract my-chat --chats 101,ig:x,files:~/notes   # L1 → observations
   python3 -m atlas wiki my-chat                        # L2: observations → wiki pages
   python3 -m atlas faces my-chat                       # cluster faces; you name them
   python3 -m atlas wiki my-chat --audit                # judge pages vs their citations
+  python3 -m atlas wiki my-chat --replan               # restructure audit (merge/retitle/delete)
+  python3 -m atlas bench my-chat                       # retrieval benchmark (hit@k, MRR)
   python3 -m atlas render my-chat                      # Wikipedia-style static site
+  python3 -m atlas mcp my-chat                         # serve it to any AI client
   ```
+
+  Chat specs mix freely: iMessage row ids (`512`), Instagram threads
+  (`ig:<thread>`), and folders of documents (`files:~/notes` — the universal
+  adapter: anything exportable as text is ingestable). Pages that outgrow one
+  page's worth of material split into sub-pages automatically (the density
+  rule), so depth is never silently sampled away.
 
   Answer the questions the build leaves in `wiki/questions.json` (identity
   merges, face names) and re-run `wiki` — answers reconcile, captions gain
