@@ -270,7 +270,7 @@ def corrections_for(state, pid) -> list:
     page id and its descendants — so they survive renames, splits, moves, and
     full restructures. Legacy per-page lists still count."""
     page = state["pages"].get(pid, {})
-    out = list(page.get("corrections", []))
+    out = []
     names = {n.lower() for n in [page.get("title", "")] + page.get("aliases", []) if n}
     for c in state.get("corrections", []):
         anchored = pid == c.get("anchor") or pid.startswith(c.get("anchor", "\x00") + "/")

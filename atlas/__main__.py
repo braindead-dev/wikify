@@ -22,6 +22,7 @@ from pathlib import Path
 from .caption import build_captions
 from .transcribe import build_transcripts
 from .bench import run_bench
+from .store_db import read_log
 from .compose import audit_pages, build_wiki, replan
 from .corrections import add_correction
 from .config import ComposeConfig, ExtractConfig, FaceConfig
@@ -209,6 +210,12 @@ def main(argv=None):
     f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
                                             Path("chats") / a.slug / "wiki",
                                             _config_from(a, FaceConfig)))
+
+    lg = sub.add_parser("log", help="view the access audit trail (who/what/when via every channel)")
+    lg.add_argument("slug")
+    lg.add_argument("--tail", type=int, default=30)
+    lg.set_defaults(fn=lambda a: [print(f"{r[0]}  {r[1]}/{r[2]}  {r[3][:60]}  → {r[4][:70]}  {r[5]}ms")
+                                  for r in read_log(Path("chats") / a.slug, a.tail)] and None)
 
     be = sub.add_parser("bench", help="retrieval benchmark: LLM probes → hit@1/hit@5/MRR")
     be.add_argument("slug")

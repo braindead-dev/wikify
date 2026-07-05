@@ -24,7 +24,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from sources.fetch import fetch, parse_specs
 
 from .retrieval import bm25_find, bm25_index
-from .snapshot import load_snapshot, snapshot_mtime
+from .store_db import fts_search, load_items, log_access
 from sources.imessage.render import format_message
 
 INSTRUCTIONS = """{subject}
@@ -86,20 +86,39 @@ def build_server(chat_dir: Path) -> FastMCP:
     def state():
         return json.loads((wiki_dir / "plan.json").read_text())
 
+    def _store_mtime():
+        path = chat_dir / "store.db"
+        return path.stat().st_mtime if path.exists() else 0.0
+
     def messages():
-        mtime = snapshot_mtime(chat_dir) or (chat_dir / "observations.json").stat().st_mtime
+        mtime = _store_mtime() or (chat_dir / "observations.json").stat().st_mtime
         if cache.get("mtime") != mtime:            # wiki rebuilt → reload
-            msgs = load_snapshot(chat_dir)         # self-contained artifact first;
+            msgs = load_items(chat_dir)            # self-contained artifact first;
             if msgs is None:                       # live sources only as fallback
                 msgs, _ = fetch(data()["chat_ids"])
             cache.update(msgs=msgs, by_id={m.rowid: m for m in msgs}, mtime=mtime)
         return cache["msgs"], cache["by_id"]
+
+    def _logged(fn):
+        import functools
+
+        @functools.wraps(fn)
+        def wrap(*a, **k):
+            t0 = time.time()
+            out = fn(*a, **k)
+            summary = (out.splitlines()[0][:120] + f" ({len(out)}ch)"
+                       if isinstance(out, str) else type(out).__name__)
+            log_access(chat_dir, "mcp", fn.__name__, k or list(a), summary,
+                       (time.time() - t0) * 1000)
+            return out
+        return wrap
 
     def page_files():
         return sorted(p for p in wiki_dir.rglob("*.md"))
 
     @mcp.tool(description=f"{short}. The whole knowledge base at a glance — call this "
               "first: sources, freshness, page tree, main-page summary.")
+    @_logged
     def overview() -> str:
         """The whole knowledge base at a glance: sources, freshness, page tree
         (collapsed to directories when large), and the main-page summary. Call
@@ -139,6 +158,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(lines)
 
     @mcp.tool()
+    @_logged
     def list_pages(prefix: str = "") -> str:
         """List page ids (optionally under a prefix like 'person' or
         'topic/road') with titles and sizes."""
@@ -158,6 +178,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return f"{max(stamps):%Y-%m-%d}" if stamps else "?"
 
     @mcp.tool()
+    @_logged
     def read_page(page: str, offset: int = 0, limit: int = 300) -> str:
         """Read a page by id (e.g. 'person/alice'), `limit` lines from `offset`.
         Citations look like [#12345] — resolve them with `resolve`."""
@@ -173,6 +194,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return head + "\n".join(chunk) + tail
 
     @mcp.tool()
+    @_logged
     def search(pattern: str, where: str = "wiki", max_results: int = 40,
                since: str = "", until: str = "") -> str:
         """Regex search (case-insensitive). `where` is one of: wiki (page text),
@@ -198,6 +220,14 @@ def build_server(chat_dir: Path) -> FastMCP:
                     hits.append(f"obs [{','.join(f'#{s}' for s in o['sources'][:3])}]: {blob[:200]}")
 
         def scan_msgs():
+            plain = not re.search(r"[\\^$.|?*+()\[\]{}]", pattern)
+            if plain and (chat_dir / "store.db").exists():
+                found = fts_search(chat_dir, " ".join(
+                    f'"{w}"' for w in pattern.split()), limit=max_results * 2,
+                    since=since, until=until)
+                hits.extend(f"#{m.rowid} {m.ts:%Y-%m-%d} {m.sender}: {m.text[:180]}"
+                            for m in found)
+                return
             msgs, _ = messages()
             lo = datetime.fromisoformat(since) if since else None
             hi = datetime.fromisoformat(until) if until else None
@@ -226,6 +256,7 @@ def build_server(chat_dir: Path) -> FastMCP:
 
     @mcp.tool(description=f"Ranked page lookup in this knowledge base ({short}) for "
               "natural-language queries — use when you don't know exact wording.")
+    @_logged
     def find(query: str, max_results: int = 12) -> str:
         """Ranked page lookup (BM25, title-weighted) for natural-language queries
         ("the road trip where the car broke"). Use this when you don't know exact
@@ -235,6 +266,7 @@ def build_server(chat_dir: Path) -> FastMCP:
             or "nothing scored — try search()"
 
     @mcp.tool()
+    @_logged
     def related(page: str, max_results: int = 12) -> str:
         """Pages most connected to this one: outgoing links, backlinks, and pages
         sharing the most underlying observations — the graph neighborhood."""
@@ -263,6 +295,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(f"{k}  ({v})" for v, k in ranked[:max_results]) or "no neighbors"
 
     @mcp.tool()
+    @_logged
     def backlinks(page: str) -> str:
         """Every page that links TO this one — traverse the wiki as a graph
         (often surfaces context that text search misses)."""
@@ -273,6 +306,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(out) or f"no pages link to {target}"
 
     @mcp.tool()
+    @_logged
     def resolve(citation: int, context: int = 4) -> str:
         """Resolve a [#id] citation to the original message with surrounding
         conversation — the ground truth behind any wiki claim."""
@@ -287,6 +321,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return "\n".join(out)
 
     @mcp.tool()
+    @_logged
     def get_image(message_id: int) -> Image:
         """Fetch the photo attached to a message (find message ids via search
         or page citations near [img: …] captions)."""
@@ -307,6 +342,7 @@ def build_server(chat_dir: Path) -> FastMCP:
     @mcp.tool(description=f"Synthesized, cited answer to any question about this "
               f"knowledge base's subject ({short}) — retrieves, reads, and writes the "
               "answer with citations plus gaps/staleness notes.")
+    @_logged
     def answer(question: str) -> str:
         """Synthesized, cited answer to a question — retrieves the most relevant
         pages, reads them, and writes the answer with [#id] citations plus an
@@ -341,6 +377,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         return str(out.get("answer", "")).strip() or "synthesis failed — read the pages directly"
 
     @mcp.tool()
+    @_logged
     def correct(fact: str) -> str:
         """Fix something wrong in the wiki by stating the true fact in plain
         words (e.g. "X and Y are two different people"). Attaches a durable

@@ -33,6 +33,13 @@ sources + the atlas pipeline:
   page's worth of material split into sub-pages automatically (the density
   rule), so depth is never silently sampled away.
 
+  Every item ever imported is archived in `<chat_dir>/store.db` (SQLite +
+  FTS5, append-forever) — citations resolve even after a source platform is
+  gone, GUI-spawned servers need no disk permissions, and one file is the
+  whole backup. Every access through any channel is audited there too:
+  `python3 -m atlas log my-chat` shows who asked what, when, and what came
+  back.
+
   Answer the questions the build leaves in `wiki/questions.json` (identity
   merges, face names) and re-run `wiki` — answers reconcile, captions gain
   `pictured: <name>`, and only the affected pages rewrite. When something in

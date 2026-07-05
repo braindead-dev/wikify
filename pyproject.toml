@@ -18,7 +18,7 @@ imsg = "sources.imessage.__main__:main"
 atlas = "atlas.__main__:main"
 
 [tool.setuptools]
-packages = ["sources", "sources.imessage", "sources.instagram", "atlas", "atlas.llm"]
+packages = ["sources", "sources.imessage", "sources.instagram", "sources.files", "atlas", "atlas.llm"]
 
 [tool.setuptools.package-data]
 atlas = ["prompts/*.md"]
