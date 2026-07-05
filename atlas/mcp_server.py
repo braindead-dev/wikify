@@ -115,6 +115,12 @@ def build_server(chat_dir: Path) -> FastMCP:
                 out.append(f"{pid}  \"{p['title']}\"  {words} words · {len(p['obs'])} obs")
         return "\n".join(out) or f"no pages under {prefix!r}"
 
+    def _freshness(text: str) -> str:
+        _, by_id = messages()
+        stamps = [by_id[int(i)].ts for i in re.findall(r"\[#(\d+)", text)
+                  if int(i) in by_id]
+        return f"{max(stamps):%Y-%m-%d}" if stamps else "?"
+
     @mcp.tool()
     def read_page(page: str, offset: int = 0, limit: int = 300) -> str:
         """Read a page by id (e.g. 'person/alice'), `limit` lines from `offset`.
@@ -122,11 +128,13 @@ def build_server(chat_dir: Path) -> FastMCP:
         path = wiki_dir / (page.removesuffix(".md") + ".md")
         if not path.exists():
             return f"no page {page!r} — try list_pages()"
-        lines = path.read_text().splitlines()
+        text = path.read_text()
+        head = f"(cited material through {_freshness(text)})\n" if offset == 0 else ""
+        lines = text.splitlines()
         chunk = lines[offset:offset + limit]
         tail = f"\n… {len(lines) - offset - limit} more lines (offset={offset + limit})" \
             if len(lines) > offset + limit else ""
-        return "\n".join(chunk) + tail
+        return head + "\n".join(chunk) + tail
 
     @mcp.tool()
     def search(pattern: str, where: str = "wiki", max_results: int = 40,
@@ -174,27 +182,85 @@ def build_server(chat_dir: Path) -> FastMCP:
             (f"\n… {total - max_results} more (narrow the pattern)" if total > max_results else "") \
             if hits else "no matches"
 
-    @mcp.tool()
-    def find(query: str, max_results: int = 12) -> str:
-        """Ranked page lookup for natural-language queries ("the road trip where
-        the car broke") — scores title, aliases, and body overlap. Use this when
-        you don't know exact wording; use `search` for exact/regex matches."""
-        terms = [t for t in re.findall(r"[a-z0-9']+", query.lower()) if len(t) > 2]
-        if not terms:
-            return "give me a few content words"
-        scored = []
+    def _bm25_index():
+        mtime = max((f.stat().st_mtime for f in page_files()), default=0)
+        if cache.get("bm25_mtime") == mtime:
+            return cache["bm25"]
+        import math
+        docs = {}
         st = state()
         for pid, pg in st["pages"].items():
             if pg["status"] != "written":
                 continue
             path = wiki_dir / (pid + ".md")
             body = path.read_text().lower() if path.exists() else ""
-            head = (pid + " " + pg["title"] + " " + " ".join(pg.get("aliases", []))).lower()
-            score = sum(6 for t in terms if t in head) +                     sum(min(body.count(t), 4) for t in terms)
-            if score:
-                scored.append((score, f"{pid}  '{pg['title']}'  (score {score})"))
+            head = (pid.replace("/", " ") + " " + pg["title"] + " "
+                    + " ".join(pg.get("aliases", []))).lower()
+            tf = {}
+            for t in re.findall(r"[a-z0-9']+", head):        # title/alias field x4
+                tf[t] = tf.get(t, 0) + 4
+            for t in re.findall(r"[a-z0-9']+", body):
+                tf[t] = tf.get(t, 0) + 1
+            docs[pid] = (tf, sum(tf.values()), pg["title"])
+        n = len(docs) or 1
+        avg = sum(l for _, l, _ in docs.values()) / n
+        df = {}
+        for tf, _, _ in docs.values():
+            for t in tf:
+                df[t] = df.get(t, 0) + 1
+        idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
+        cache.update(bm25=(docs, idf, avg), bm25_mtime=mtime)
+        return cache["bm25"]
+
+    @mcp.tool()
+    def find(query: str, max_results: int = 12) -> str:
+        """Ranked page lookup (BM25, title-weighted) for natural-language queries
+        ("the road trip where the car broke"). Use this when you don't know exact
+        wording; use `search` for exact/regex matches."""
+        terms = [t for t in re.findall(r"[a-z0-9']+", query.lower()) if len(t) > 2]
+        if not terms:
+            return "give me a few content words"
+        docs, idf, avg = _bm25_index()
+        k1, b = 1.4, 0.6
+        scored = []
+        for pid, (tf, length, title) in docs.items():
+            sc = 0.0
+            for t in terms:
+                f = tf.get(t, 0)
+                if f:
+                    sc += idf.get(t, 0) * f * (k1 + 1) / (f + k1 * (1 - b + b * length / avg))
+            if sc > 0:
+                scored.append((sc, f"{pid}  '{title}'  ({sc:.1f})"))
         scored.sort(reverse=True)
         return "\n".join(line for _, line in scored[:max_results]) or "nothing scored — try search()"
+
+    @mcp.tool()
+    def related(page: str, max_results: int = 12) -> str:
+        """Pages most connected to this one: outgoing links, backlinks, and pages
+        sharing the most underlying observations — the graph neighborhood."""
+        target = page.removesuffix(".md")
+        st = state()
+        if target not in st["pages"]:
+            return f"no page {target!r}"
+        scores = {}
+        path = wiki_dir / (target + ".md")
+        if path.exists():
+            for mt in re.finditer(r"\[\[([^|\]]+)", path.read_text()):
+                scores[mt.group(1)] = scores.get(mt.group(1), 0) + 3
+        rx = re.compile(r"\[\[" + re.escape(target) + r"[|\]]")
+        for f in page_files():
+            pid = str(f.relative_to(wiki_dir).with_suffix(""))
+            if pid != target and rx.search(f.read_text()):
+                scores[pid] = scores.get(pid, 0) + 3
+        mine = set(st["pages"][target].get("obs", []))
+        if mine:
+            for pid, pg in st["pages"].items():
+                if pid != target and pg["status"] == "written":
+                    shared = len(mine & set(pg.get("obs", [])))
+                    if shared:
+                        scores[pid] = scores.get(pid, 0) + min(shared, 10)
+        ranked = sorted(((v, k) for k, v in scores.items() if k in st["pages"]), reverse=True)
+        return "\n".join(f"{k}  ({v})" for v, k in ranked[:max_results]) or "no neighbors"
 
     @mcp.tool()
     def backlinks(page: str) -> str:
@@ -237,6 +303,40 @@ def build_server(chat_dir: Path) -> FastMCP:
             if tmp.exists():
                 src = tmp
         return Image(path=str(src))
+
+    @mcp.tool()
+    def answer(question: str) -> str:
+        """Synthesized, cited answer to a question — retrieves the most relevant
+        pages, reads them, and writes the answer with [#id] citations plus an
+        explicit note on what the knowledge base does NOT cover (gaps and
+        staleness). Prefer this for direct questions; use read/search tools when
+        you want to explore yourself."""
+        from .llm import LLMClient
+        top = find(question, max_results=5)
+        if "nothing scored" in top:
+            return "the knowledge base has nothing on this — note that as the answer"
+        pids = [line.split()[0] for line in top.splitlines()]
+        material = []
+        for pid in pids[:4]:
+            path = wiki_dir / (pid + ".md")
+            if path.exists():
+                text = path.read_text()
+                material.append(f"=== {pid} (cited through {_freshness(text)}) ===\n"
+                                + text[:9000])
+        msgs, _ = messages()
+        newest = max(m.ts for m in msgs)
+        llm = LLMClient()
+        out = llm.complete_json(
+            "You answer questions from a cited personal knowledge base. Use ONLY the "
+            "pages provided. Keep every [#id] citation that supports a claim you use. "
+            "End with a short 'What this doesn't cover' note when relevant: gaps, and "
+            "staleness (the record ends at the date given — anything after is unknown). "
+            "Be direct and specific. JSON only.",
+            f"QUESTION: {question}\n\nRECORD ENDS: {newest:%Y-%m-%d}\n\n"
+            + "\n\n".join(material)
+            + '\n\nReturn JSON: {"answer": "..."}',
+            effort="low", temperature=0.2, max_tokens=4000)
+        return str(out.get("answer", "")).strip() or "synthesis failed — read the pages directly"
 
     @mcp.tool()
     def correct(fact: str) -> str:
