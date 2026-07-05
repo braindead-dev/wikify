@@ -149,6 +149,104 @@ def _save_state(wiki_dir: Path, state) -> None:
 
 
 # ---------------------------------------------------------------- rendering
+def _children(state, pid) -> list:
+    return [c for c in state["pages"] if c.startswith(pid + "/")]
+
+
+def _is_child(pid) -> bool:
+    return pid.count("/") >= 2
+
+
+def _assign_among(llm, parent, options, items, cfg, trace):
+    """Divide a parent page's observations among its sub-pages. Returns
+    {obs_key: chosen page id}; unanswered items default to the parent."""
+    schema = {"type": "object", "additionalProperties": False, "required": ["assignments"],
+              "properties": {"assignments": {"type": "array", "items": {
+                  "type": "object", "additionalProperties": False, "required": ["n", "page"],
+                  "properties": {"n": {"type": "integer"},
+                                 "page": {"type": "string", "enum": sorted(options)}}}}}}
+    system = ("You organize a wiki page that grew too large into its sub-pages. "
+              "Assign EVERY observation to the single best-fitting page. The parent "
+              "page keeps only framing/overview material that belongs to no sub-page.")
+    out = {}
+    for start in range(0, len(items), cfg.route_batch):
+        batch = items[start:start + cfg.route_batch]
+        lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(batch))
+        res = llm.complete_json(system, f"PAGES:\n" + "\n".join(sorted(options))
+                                + f"\n\nOBSERVATIONS:\n{lines}\n\nAssign every observation.",
+                                effort="low", schema=schema, schema_name="assign",
+                                trace=trace, max_tokens=cfg.max_tokens,
+                                temperature=cfg.temperature)
+        for a in (res.get("assignments") or []):
+            n = a.get("n")
+            if isinstance(n, int) and 0 <= n < len(batch):
+                out[batch[n][0]] = a["page"]
+    for k, _ in items:
+        out.setdefault(k, parent)
+    return out
+
+
+_SPLIT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["children"],
+                 "properties": {"children": {"type": "array", "minItems": 2, "maxItems": 6,
+                     "items": {"type": "object", "additionalProperties": False,
+                               "required": ["slug", "title"],
+                               "properties": {"slug": {"type": "string"},
+                                              "title": {"type": "string"}}}}}}
+
+
+def split_overflow_pages(llm, state, keyed, by_id, workspace, cfg, trace, verbose=True) -> list:
+    """Density rule: a page whose material exceeds the budget even with no
+    quotes splits into sub-pages (`pid/slug`), its observations divided among
+    them; the parent becomes a summary page holding framing material plus
+    links. Runs until nothing overflows, so knowledge density per page stays
+    roughly constant no matter how large a subject grows."""
+    created = []
+    for _ in range(3):                                   # children may overflow too
+        overflow = []
+        for pid, page in state["pages"].items():
+            if page["type"] == "analysis" or not page["obs"]:
+                continue
+            material, _ = _material(page, keyed, by_id, 0)
+            if sum(len(m) for m in material) // 4 > cfg.material_budget:
+                overflow.append(pid)
+        if not overflow:
+            break
+        for pid in overflow:
+            page = state["pages"][pid]
+            stride = max(1, len(page["obs"]) // 300)
+            sample = "\n".join(keyed[k]["title"][:90] for k in page["obs"][::stride][:300])
+            out = llm.complete_json(
+                ("A wiki page has grown past one page's worth of material. Propose 2-6 "
+                 "sub-pages that divide its subject along its OWN natural fault lines "
+                 "(eras, arcs, facets, sub-topics) — titles a reader would look for. "
+                 "Slugs are short-kebab-case. JSON only.\n\n" + workspace),
+                f"PAGE: {pid} — \"{page['title']}\" · {len(page['obs'])} observations\n"
+                f"SAMPLE OF ITS MATERIAL:\n{sample}",
+                effort=cfg.effort, schema=_SPLIT_SCHEMA, schema_name="split",
+                trace=trace, max_tokens=cfg.max_tokens, temperature=cfg.temperature)
+            kids = {}
+            for c in (out.get("children") or []):
+                slug = re.sub(r"[^a-z0-9-]", "", str(c.get("slug", "")).lower().replace(" ", "-"))
+                cid = f"{pid}/{slug}"
+                if slug and cid not in state["pages"]:
+                    kids[cid] = str(c.get("title") or slug).strip()
+            if len(kids) < 2:
+                continue
+            assign = _assign_among(llm, pid, list(kids) + [pid],
+                                   [(k, keyed[k]) for k in page["obs"]], cfg, trace)
+            for cid, title in kids.items():
+                obs = [k for k, tgt in assign.items() if tgt == cid]
+                state["pages"][cid] = {"id": cid, "title": title, "type": page["type"],
+                                       "aliases": [], "obs": obs, "status": "pending"}
+                created.append(cid)
+            page["obs"] = [k for k, tgt in assign.items() if tgt == pid]
+            page["status"] = "pending"
+            if verbose:
+                print(f"  [split] {pid} → {', '.join(kids)} "
+                      f"(parent keeps {len(page['obs'])} obs)", flush=True)
+    return created
+
+
 def corrections_for(state, pid) -> list:
     """Every correction premise that applies to this page. Corrections anchor to
     SUBJECTS (title/alias names captured at attach time) plus their original
@@ -423,8 +521,12 @@ def extend_plan(llm, new_items, state, workspace, cfg, trace, effort=None) -> li
 
 
 def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
-    """batch: list of (key, obs). Returns {key: [page ids]} for every key."""
-    entity_pages = {pid: p for pid, p in state["pages"].items() if p["type"] != "analysis"}
+    """batch: list of (key, obs). Returns {key: [page ids]} for every key.
+    Routing sees only TOP-LEVEL pages — a parent represents its whole subtree,
+    and family-level assignment distributes to children afterwards — so the
+    routing enum stays small no matter how deep the tree grows."""
+    entity_pages = {pid: p for pid, p in state["pages"].items()
+                    if p["type"] != "analysis" and not _is_child(pid)}
     system = (_prompt("route.md").replace("{workspace}", workspace)
               + "\n\nPAGE TREE:\n" + _page_tree({"pages": entity_pages}))
     lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(batch))
@@ -515,6 +617,12 @@ def write_page(llm, pid, state, keyed, by_id, workspace, wiki_dir, origins, cfg,
               + "\n\nPAGE TREE (for [[cross-links]]):\n" + _page_tree(state))
     user = (f"PAGE TO WRITE: {pid} — \"{page['title']}\" ({page['type']})"
             + (f" · aliases: {', '.join(page['aliases'])}" if page.get("aliases") else ""))
+    kids = _children(state, pid)
+    if kids:
+        user += ("\n\nTHIS IS A PARENT PAGE — its depth lives in sub-pages: "
+                 + ", ".join(f"[[{c}]]" for c in sorted(kids))
+                 + ". Write it summary-style: the essential portrait/arc plus pointers "
+                 "into each sub-page for detail. Do not duplicate their depth.")
     if origins:
         user += "\n\nCANONICAL ORIGINS (earliest recorded uses — never contradict):\n" + origins
     existing = _page_path(wiki_dir, pid)
@@ -959,8 +1067,37 @@ def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=
                     print(f"\r  [route] {done}/{len(batches)} batches", end="", flush=True)
         if verbose:
             print(flush=True)
+        # obs routed to a parent flow down to its children family-by-family
+        parents = {pid for pid in state["pages"] if _children(state, pid)
+                   and state["pages"][pid]["status"] == "pending"}
+        for pid in sorted(parents):
+            fam = _children(state, pid) + [pid]
+            inflow = [k for k in state["pages"][pid]["obs"]
+                      if all(k not in state["pages"][c]["obs"] for c in _children(state, pid))]
+            if not inflow:
+                continue
+            assign = _assign_among(llm, pid, fam, [(k, keyed[k]) for k in inflow],
+                                   cfg, sink(f"family-{pid.replace('/', '-')}"))
+            moved = 0
+            for k, tgt in assign.items():
+                if tgt != pid and tgt in state["pages"]:
+                    state["pages"][pid]["obs"].remove(k)
+                    if k not in state["pages"][tgt]["obs"]:
+                        state["pages"][tgt]["obs"].append(k)
+                        state["pages"][tgt]["status"] = "pending"
+                    moved += 1
+            if moved and verbose:
+                print(f"  [route] {pid}: {moved} observations flowed to sub-pages", flush=True)
+        _save_state(wiki_dir, state)
     if stage == "route":
         return state
+
+    # ---- SPLIT (density rule: no page exceeds one page's worth of material)
+    if not only:
+        created = split_overflow_pages(llm, state, keyed, by_id, workspace, cfg,
+                                       sink("split"), verbose)
+        if created:
+            _save_state(wiki_dir, state)
 
     # ---- WRITE
     if only:                              # targeted (re)write of specific pages
