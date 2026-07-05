@@ -106,8 +106,16 @@ def build_server(chat_dir: Path) -> FastMCP:
         def wrap(*a, **k):
             t0 = time.time()
             out = fn(*a, **k)
-            summary = (out.splitlines()[0][:120] + f" ({len(out)}ch)"
-                       if isinstance(out, str) else type(out).__name__)
+            if isinstance(out, str):
+                # audit WHAT was accessed: page ids for page-bearing outputs,
+                # first line otherwise
+                pages = re.findall(r"^=== (\S+)", out, re.M) or \
+                    [ln.split()[0] for ln in out.splitlines()[:12]
+                     if re.match(r"(person|topic|event|analysis)/", ln)]
+                summary = (f"pages: {', '.join(pages)}" if pages
+                           else out.splitlines()[0][:120]) + f" ({len(out)}ch)"
+            else:
+                summary = type(out).__name__
             log_access(chat_dir, "mcp", fn.__name__, k or list(a), summary,
                        (time.time() - t0) * 1000)
             return out
