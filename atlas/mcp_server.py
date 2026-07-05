@@ -26,19 +26,46 @@ from sources.fetch import fetch, parse_specs
 from .retrieval import bm25_find, bm25_index
 from sources.imessage.render import format_message
 
-INSTRUCTIONS = """This server is a cited wiki built from a real conversation history
-(multiple sources merged into one timeline). Pages are markdown with [#id]
-citations pointing at original messages.
+INSTRUCTIONS = """{subject}
 
-Start every session by calling `overview` — it returns the page tree, the
-sources, and freshness metadata. Read pages before searching; the wiki is the
-synthesized layer and usually answers directly. Drop to `search` over
-observations/messages only when the wiki lacks the detail, and use `resolve`
-to quote original messages behind any citation.
+Cast and recurring subjects include: {cast}.
+{npages} cited wiki pages built from {nobs} observations over the full history.
 
-Never suggest editing page files directly — pages are regenerated from
-underlying data and hand-edits are lost. To fix anything wrong, call
-`correct` with the fact in plain words; it becomes a durable premise."""
+USE THESE TOOLS whenever the user mentions this group or any of these people,
+or asks about their history, jokes, events, relationships, or anything this
+corpus could know — none of it is in your training data, all of it is here.
+
+Start with `overview` (page tree + freshness). Read pages before searching —
+the wiki is the synthesized layer and usually answers directly. Drop to
+`search` over observations/messages when the wiki lacks detail; use `resolve`
+to quote the original messages behind any [#id] citation.
+
+Never suggest editing page files directly — pages are regenerated and
+hand-edits are lost. To fix anything wrong, call `correct` with the true fact
+in plain words; it becomes a durable premise."""
+
+
+def _identity(chat_dir, wiki_dir, state) -> dict:
+    """Compose the server's self-description FROM the wiki, so any host model
+    can tell when this knowledge base is the right tool. Nothing hardcoded:
+    the cast comes from the largest person pages, the subject line from the
+    page that best matches the wiki's own name."""
+    pages = {pid: p for pid, p in state["pages"].items() if p["status"] == "written"}
+    cast = [t for _, t in sorted(((len(p["obs"]), p["title"]) for pid, p in pages.items()
+                                  if p["type"] == "person" and pid.count("/") == 1),
+                                 reverse=True)[:10]]
+    subject = f"This server is the knowledge base of \"{chat_dir.name}\"."
+    hits = bm25_find(bm25_index(state, wiki_dir), chat_dir.name.replace("-", " "), k=1)
+    if hits:
+        body = (wiki_dir / (hits[0][1] + ".md")).read_text().split("---", 2)[-1]
+        para = next((ln.strip() for ln in body.split("\n\n") if len(ln.strip()) > 80), "")
+        para = re.sub(r"\[#[0-9, #]+\]|\[\[([^|\]]+\|)?|\]\]|\*\*", "", para)
+        if para:
+            subject = ("This server is the collective memory and knowledge base of: "
+                       + para[:420])
+    return {"subject": subject, "cast": ", ".join(cast) or "(see overview)",
+            "npages": len(pages), "nobs": "{:,}".format(
+                sum(len(p["obs"]) for p in pages.values()))}
 
 
 def build_server(chat_dir: Path) -> FastMCP:
@@ -46,7 +73,10 @@ def build_server(chat_dir: Path) -> FastMCP:
     wiki_dir = chat_dir / "wiki"
     if not (wiki_dir / "plan.json").exists():
         raise SystemExit(f"no built wiki at {wiki_dir} — run `atlas wiki` first")
-    mcp = FastMCP(f"wiki-{chat_dir.name}", instructions=INSTRUCTIONS)
+    state0 = json.loads((wiki_dir / "plan.json").read_text())
+    ident = _identity(chat_dir, wiki_dir, state0)
+    short = ident["subject"].split(": ", 1)[-1].split(". ")[0][:180]
+    mcp = FastMCP(f"{chat_dir.name}-wiki", instructions=INSTRUCTIONS.format(**ident))
     cache = {}
 
     def data():
@@ -65,7 +95,8 @@ def build_server(chat_dir: Path) -> FastMCP:
     def page_files():
         return sorted(p for p in wiki_dir.rglob("*.md"))
 
-    @mcp.tool()
+    @mcp.tool(description=f"{short}. The whole knowledge base at a glance — call this "
+              "first: sources, freshness, page tree, main-page summary.")
     def overview() -> str:
         """The whole knowledge base at a glance: sources, freshness, page tree
         (collapsed to directories when large), and the main-page summary. Call
@@ -190,7 +221,8 @@ def build_server(chat_dir: Path) -> FastMCP:
             cache.update(bm25=bm25_index(state(), wiki_dir), bm25_mtime=mtime)
         return cache["bm25"]
 
-    @mcp.tool()
+    @mcp.tool(description=f"Ranked page lookup in this knowledge base ({short}) for "
+              "natural-language queries — use when you don't know exact wording.")
     def find(query: str, max_results: int = 12) -> str:
         """Ranked page lookup (BM25, title-weighted) for natural-language queries
         ("the road trip where the car broke"). Use this when you don't know exact
@@ -269,7 +301,9 @@ def build_server(chat_dir: Path) -> FastMCP:
                 src = tmp
         return Image(path=str(src))
 
-    @mcp.tool()
+    @mcp.tool(description=f"Synthesized, cited answer to any question about this "
+              f"knowledge base's subject ({short}) — retrieves, reads, and writes the "
+              "answer with citations plus gaps/staleness notes.")
     def answer(question: str) -> str:
         """Synthesized, cited answer to a question — retrieves the most relevant
         pages, reads them, and writes the answer with [#id] citations plus an
