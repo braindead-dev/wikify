@@ -24,6 +24,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from sources.fetch import fetch, parse_specs
 
 from .retrieval import bm25_find, bm25_index
+from .snapshot import load_snapshot, snapshot_mtime
 from sources.imessage.render import format_message
 
 INSTRUCTIONS = """{subject}
@@ -86,9 +87,11 @@ def build_server(chat_dir: Path) -> FastMCP:
         return json.loads((wiki_dir / "plan.json").read_text())
 
     def messages():
-        mtime = (chat_dir / "observations.json").stat().st_mtime
+        mtime = snapshot_mtime(chat_dir) or (chat_dir / "observations.json").stat().st_mtime
         if cache.get("mtime") != mtime:            # wiki rebuilt → reload
-            msgs, _ = fetch(data()["chat_ids"])
+            msgs = load_snapshot(chat_dir)         # self-contained artifact first;
+            if msgs is None:                       # live sources only as fallback
+                msgs, _ = fetch(data()["chat_ids"])
             cache.update(msgs=msgs, by_id={m.rowid: m for m in msgs}, mtime=mtime)
         return cache["msgs"], cache["by_id"]
 

@@ -21,6 +21,7 @@ from .transcribe import load_transcripts
 from .config import ExtractConfig
 from .llm import LLMClient
 from .observation import Observation, observations_schema
+from .snapshot import save_snapshot
 from .store import RunStore
 
 _PROMPT = Path(__file__).resolve().parent / "prompts" / "extract.md"
@@ -132,9 +133,11 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     and non-participant people — never merges or dedups, so Layer 1 stays a
     faithful capture."""
     config = config or ExtractConfig()
+    Path(chat_dir).mkdir(parents=True, exist_ok=True)
     until = datetime.fromisoformat(config.until) if config.until else None
     streams, db = fetch_streams(chat_ids, until=until)
     msgs = [m for s in streams for m in s["messages"]]
+    save_snapshot(chat_dir, sorted(msgs, key=lambda m: m.ts))
     valid_ids = {m.rowid for m in msgs}
     chat_msgs = [m for st in streams if st.get("kind", "chat") == "chat"
                  for m in st["messages"]]
