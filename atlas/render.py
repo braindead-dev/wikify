@@ -117,7 +117,8 @@ def _inline(s, page, tree):
             return html.escape(label or pid)
         text = html.escape(label or info["title"])
         if info.get("written"):
-            return f'<a href="../{pid}.html">{text}</a>'
+            up = "../" * (page.pid.count("/") if page.pid else 1)
+            return f'<a href="{up}{pid}.html">{text}</a>'
         return (f'<a class="new" title="page not written (too few observations)">{text}</a>')
     s = _LINK_RE.sub(wikilink, s)
     s = _MDLINK_RE.sub(lambda m: f'<a href="{m.group(2).replace(".md", ".html")}">{m.group(1)}</a>', s)
@@ -255,7 +256,7 @@ def render_site(chat_dir, out=None, verbose=True):
     wiki_title = next((t for t in titles.values() if t), None) or chat_dir.name
 
     files = {p.relative_to(wiki_dir).with_suffix("").as_posix(): p
-             for p in wiki_dir.glob("*/*.md")}
+             for p in wiki_dir.rglob("*.md") if p.parent != wiki_dir}
     tree = {pid: {"title": p["title"], "type": p["type"], "written": pid in files}
             for pid, p in plan["pages"].items()}
 
@@ -272,22 +273,24 @@ def render_site(chat_dir, out=None, verbose=True):
         page = _Page(pid, by_id)
         content, sections = _body_html(body, page, tree)
         total_refs += len(page.refs)
+        up = "../" * pid.count("/")
         backs = sorted(links_to.get(pid, ()))
         linkshere = ""
         if backs:
             linkshere = ('<div class="linkshere">What links here: '
-                         + " · ".join(f'<a href="../{b}.html">{html.escape(tree[b]["title"])}</a>'
+                         + " · ".join(f'<a href="{up}{b}.html">{html.escape(tree[b]["title"])}</a>'
                                            for b in backs if b in tree) + "</div>")
         cat = meta.get("type", "page")
         content = (f"<h1>{html.escape(meta.get('title', pid))}</h1>"
                    f'<div class="subtitle">From {html.escape(wiki_title)}, the free encyclopedia</div>'
                    + _infobox(pid, meta, page, tree) + _toc(sections) + content
                    + _references(page)
-                   + f'<div class="catbar"><a href="../index.html#{cat}">Category: '
+                   + f'<div class="catbar"><a href="{up}index.html#{cat}">Category: '
                      f'{html.escape(cat.capitalize())}</a></div>' + linkshere)
         path = site / (pid + ".html")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_shell(meta.get("title", pid), wiki_title, content, depth=1))
+        path.write_text(_shell(meta.get("title", pid), wiki_title, content,
+                               depth=pid.count("/")))
 
     # ---- main page
     by_type = {"person": [], "topic": [], "event": [], "analysis": []}

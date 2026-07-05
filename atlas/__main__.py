@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .caption import build_captions
 from .transcribe import build_transcripts
-from .compose import audit_pages, build_wiki
+from .compose import audit_pages, build_wiki, replan
 from .corrections import add_correction
 from .config import ComposeConfig, ExtractConfig, FaceConfig
 from .faces import build_faces
@@ -88,6 +88,9 @@ def cmd_wiki(args):
         return
     if args.audit:
         audit_pages(chat_dir, _config_from(args, ComposeConfig))
+        return
+    if args.replan:
+        replan(chat_dir, _config_from(args, ComposeConfig))
         return
     if args.fresh:
         shutil.rmtree(chat_dir / "wiki", ignore_errors=True)
@@ -171,6 +174,8 @@ def main(argv=None):
                    help="stop after this sublayer (for inspection)")
     w.add_argument("--pages", type=int, help="only write this many pages (for trying things out)")
     w.add_argument("--only", help="comma-separated page ids to (re)write, e.g. person/alice")
+    w.add_argument("--replan", action="store_true",
+                   help="restructure audit: merge/retitle/delete ops + inconsistency report")
     w.add_argument("--audit", action="store_true",
                    help="judge every page against its cited messages; flag pages for revision")
     w.add_argument("--questions", action="store_true",

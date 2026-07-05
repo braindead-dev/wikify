@@ -939,6 +939,113 @@ def audit_pages(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
     return counts
 
 
+_REPLAN_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["ops", "inconsistencies"],
+    "properties": {
+        "ops": {"type": "array", "maxItems": 20, "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["op", "page", "into", "new_title", "reason"],
+            "properties": {
+                "op": {"type": "string", "enum": ["merge", "retitle", "delete"]},
+                "page": {"type": "string"},
+                "into": {"type": "string"},
+                "new_title": {"type": "string"},
+                "reason": {"type": "string"}}}},
+        "inconsistencies": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["pages", "note"],
+            "properties": {"pages": {"type": "array", "items": {"type": "string"}},
+                           "note": {"type": "string"}}}},
+    }}
+
+
+def replan(chat_dir, config: ComposeConfig = None, verbose=True) -> dict:
+    """The restructure audit — drift's real answer. Looks at the whole tree with
+    its stats (sizes, overlap, thinness) and proposes structural operations:
+    merge overlapping subjects, retitle stale names, delete junk pages. Splits
+    are NOT proposed here — the density rule handles growth automatically.
+    Applied operations mark pages pending; regeneration makes the new structure
+    read as if it had always been organized that way. Cross-page factual
+    inconsistencies are reported to `wiki/inconsistencies.json` for corrections."""
+    cfg = config or ComposeConfig()
+    chat_dir = Path(chat_dir)
+    wiki_dir = chat_dir / "wiki"
+    state = _load_state(wiki_dir)
+    data = json.loads((chat_dir / "observations.json").read_text())
+    keyed = {}
+    for o in data["observations"]:
+        keyed.setdefault(obs_key(o), o)
+
+    lines = []
+    for pid, pg in sorted(state["pages"].items()):
+        if pg["status"] not in ("written", "pending"):
+            continue
+        path = _page_path(wiki_dir, pid)
+        words = len(path.read_text().split()) if path.exists() else 0
+        overlaps = []
+        mine = set(pg["obs"])
+        if mine:
+            for pid2, pg2 in state["pages"].items():
+                if pid2 > pid and pg2["obs"]:
+                    shared = len(mine & set(pg2["obs"]))
+                    if shared > 0.4 * min(len(mine), len(pg2["obs"])):
+                        overlaps.append(pid2)
+        lines.append(f"{pid} \"{pg['title']}\" · {len(pg['obs'])} obs · {words}w"
+                     + (f" · OVERLAPS {','.join(overlaps)}" if overlaps else ""))
+    msgs, db = fetch(data["chat_ids"])
+    participants = sorted({m.sender for m in msgs if not m.system and m.sender})
+    workspace = workspace_header(db, data["chat_ids"], msgs, participants)
+    llm = LLMClient(cfg.model)
+    out = llm.complete_json(
+        ("You are the standards editor of this wiki. Given every page with its "
+         "stats, propose the structural operations that would make the tree ideal: "
+         "merge pages covering the same subject (keep the better id), retitle pages "
+         "whose names no longer fit their content, delete pages that should not "
+         "exist. Propose ONLY what clearly improves the tree — usually a handful of "
+         "ops, sometimes none. Also report factual inconsistencies you can see "
+         "between page titles/scopes. JSON only.\n\n" + workspace),
+        "PAGES:\n" + "\n".join(lines), effort=cfg.effort, schema=_REPLAN_SCHEMA,
+        schema_name="replan", max_tokens=cfg.max_tokens, temperature=cfg.temperature)
+
+    applied = []
+    for op in (out.get("ops") or []):
+        pid = op.get("page", "")
+        if pid not in state["pages"]:
+            continue
+        if op["op"] == "merge" and op.get("into") in state["pages"] and op["into"] != pid:
+            merge_pages(state, wiki_dir, op["into"], pid)
+            applied.append(f"merge {pid} → {op['into']} ({op['reason'][:60]})")
+        elif op["op"] == "retitle" and op.get("new_title"):
+            old = state["pages"][pid]["title"]
+            state["pages"][pid]["title"] = op["new_title"]
+            state["pages"][pid]["aliases"] = sorted(set(
+                state["pages"][pid].get("aliases", []) + [old]))
+            state["pages"][pid]["status"] = "pending"
+            applied.append(f"retitle {pid}: '{old}' → '{op['new_title']}'")
+        elif op["op"] == "delete":
+            for k in state["pages"][pid]["obs"]:
+                if k in state["routed"] and state["routed"][k]:
+                    state["routed"][k] = [x for x in state["routed"][k] if x != pid] or None
+                    if state["routed"][k] is None:
+                        del state["routed"][k]      # re-routes next build
+            _page_path(wiki_dir, pid).unlink(missing_ok=True)
+            del state["pages"][pid]
+            applied.append(f"delete {pid} ({op['reason'][:60]})")
+    _save_state(wiki_dir, state)
+    issues = out.get("inconsistencies") or []
+    if issues:
+        _atomic_write(wiki_dir / "inconsistencies.json", issues)
+    if verbose:
+        for a in applied:
+            print(f"  [replan] {a}", flush=True)
+        print(f"[replan] {len(applied)} ops applied · {len(issues)} inconsistencies "
+              f"→ {wiki_dir / 'inconsistencies.json' if issues else 'none'}", flush=True)
+        if applied:
+            print("[replan] run `atlas wiki` to regenerate affected pages", flush=True)
+    return {"applied": applied, "inconsistencies": issues}
+
+
 # ---------------------------------------------------------------- pipeline
 def build_wiki(chat_dir, config: ComposeConfig = None, stage="all", limit_pages=None,
                only=None, verbose=True) -> dict:
