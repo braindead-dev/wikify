@@ -69,17 +69,32 @@ def _identity(chat_dir, wiki_dir, state) -> dict:
                 sum(len(p["obs"]) for p in pages.values()))}
 
 
-def build_server(chat_dir: Path) -> FastMCP:
+def build_server(chat_dir: Path, grant=None) -> FastMCP:
+    """`grant` (from atlas/grants.resolve_grant) restricts the registered tool
+    surface and tags the audit channel — a provisioned consumer can only call
+    what it was granted, and every access is attributed to it."""
     chat_dir = Path(chat_dir)
     wiki_dir = chat_dir / "wiki"
     if not (wiki_dir / "plan.json").exists():
         raise SystemExit(f"no built wiki at {wiki_dir} — run `atlas wiki` first")
+    if grant and grant["wiki"] != chat_dir.name:
+        raise SystemExit(f"grant '{grant['name']}' is for wiki '{grant['wiki']}'")
     state0 = json.loads((wiki_dir / "plan.json").read_text())
     ident = _identity(chat_dir, wiki_dir, state0)
     short = ident["subject"].split(": ", 1)[-1].split(". ")[0][:180]
     mcp = FastMCP(f"{chat_dir.name}-wiki", instructions=INSTRUCTIONS.format(**ident))
     cache = {}
-    channel = "mcp"
+    channel = f"mcp/grant:{grant['name']}" if grant else "mcp"
+    allowed = set(grant["tools"]) if grant else None
+    _tool = mcp.tool
+
+    def _gated(*a, **k):                    # drop tools outside the grant
+        def deco(fn):
+            if allowed is not None and fn.__name__ not in allowed:
+                return fn                   # defined but not registered
+            return _tool(*a, **k)(fn)
+        return deco
+    mcp.tool = _gated
 
     def data():
         return json.loads((chat_dir / "observations.json").read_text())
@@ -237,14 +252,16 @@ def build_server(chat_dir: Path) -> FastMCP:
                 hits.extend(f"#{m.rowid} {m.ts:%Y-%m-%d} {m.sender}: {m.text[:180]}"
                             for m in found)
                 return
-            msgs, _ = messages()
+            from .store_db import iter_items
             lo = datetime.fromisoformat(since) if since else None
             hi = datetime.fromisoformat(until) if until else None
-            for m in msgs:
+            for m in iter_items(_specs()):        # cursor scan: bounded memory at any size
                 if (lo and m.ts < lo) or (hi and m.ts > hi):
                     continue
                 if m.text and rx.search(m.text):
                     hits.append(f"#{m.rowid} {m.ts:%Y-%m-%d} {m.sender}: {m.text[:180]}")
+                    if len(hits) >= max_results * 4:
+                        break
 
         scans = {"wiki": [scan_wiki], "observations": [scan_obs], "messages": [scan_msgs],
                  "all": [scan_wiki, scan_obs, scan_msgs]}.get(where)
@@ -393,5 +410,9 @@ def build_server(chat_dir: Path) -> FastMCP:
     return mcp
 
 
-def serve(chat_dir):
-    build_server(Path(chat_dir)).run()
+def serve(chat_dir, grant_token=None):
+    grant = None
+    if grant_token:
+        from .grants import resolve_grant
+        grant = resolve_grant(grant_token)
+    build_server(Path(chat_dir), grant=grant).run()

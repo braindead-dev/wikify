@@ -24,6 +24,7 @@ from .transcribe import build_transcripts
 from .bench import run_bench
 from .store_db import read_log
 from .compose import audit_pages, build_wiki, replan
+from .grants import ALL_TOOLS, create_grant, list_grants, revoke_grant
 from .corrections import add_correction
 from .config import ComposeConfig, ExtractConfig, FaceConfig
 from .faces import build_faces
@@ -155,6 +156,13 @@ def cmd_update(args):
         render_site(chat_dir)
 
 
+def _print_grant(g):
+    print(f"grant '{g['name']}' → wiki {g['wiki']} · tools: {', '.join(g['tools'])}"
+          + (f" · expires {g['expires']}" if g['expires'] else ""))
+    print(f"token: {g['token']}")
+    print(f"serve: python3 -m atlas mcp {g['wiki']} --grant {g['token']}")
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="atlas", description="Build a cited wiki over a chat.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -224,7 +232,25 @@ def main(argv=None):
 
     m = sub.add_parser("mcp", help="serve the wiki as an MCP server (stdio) for any AI client")
     m.add_argument("slug", help="workspace under wikis/<slug>/ (needs a built wiki)")
-    m.set_defaults(fn=lambda a: serve(Path("wikis") / a.slug))
+    m.add_argument("--grant", help="serve under a grant token (restricted tools, attributed audit)")
+    m.set_defaults(fn=lambda a: serve(Path("wikis") / a.slug, grant_token=a.grant))
+
+    gr = sub.add_parser("grant", help="mint provisioned access to a wiki (token + tool subset)")
+    gr.add_argument("slug")
+    gr.add_argument("--name", required=True, help="who/what this grant is for, e.g. slackbot")
+    gr.add_argument("--tools", help=f"comma-separated (default: read-only). all: {','.join(ALL_TOOLS)}")
+    gr.add_argument("--expires", help="e.g. 90d, 12h (default: never)")
+    gr.add_argument("--note", default="")
+    gr.set_defaults(fn=lambda a: _print_grant(create_grant(
+        a.slug, a.name, a.tools.split(",") if a.tools else None, a.expires, a.note)))
+
+    gl = sub.add_parser("grants", help="list or revoke grants")
+    gl.add_argument("--revoke", help="grant name to revoke")
+    gl.set_defaults(fn=lambda a: (
+        print("revoked" if revoke_grant(a.revoke) else "no such grant") if a.revoke
+        else [print(f"{g['name']:<14} wiki={g['wiki']:<10} tools={','.join(g['tools'])}"
+                    f"{'  expires=' + g['expires'] if g['expires'] else ''}")
+              for g in list_grants()] and None))
 
     u = sub.add_parser("update", help="one incremental pass: caption → extract → wiki → render → sync")
     u.add_argument("slug", help="workspace under wikis/<slug>/ (chat ids from its manifest)")
