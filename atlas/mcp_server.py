@@ -152,10 +152,11 @@ def build_server(chat_dir: Path, grant=None) -> FastMCP:
         this first in every session."""
         s, d = state(), data()
         pages = {pid: p for pid, p in s["pages"].items() if p["status"] == "written"}
-        im_ids, ig_keys, file_roots = parse_specs(d["chat_ids"])
+        im_ids, ig_keys, file_roots, claude_projects = parse_specs(d["chat_ids"])
         sources = ([f"iMessage chats {im_ids}"] if im_ids else []) + \
                   [f"Instagram thread {k}" for k in ig_keys] + \
-                  [f"documents {r}" for r in file_roots]
+                  [f"documents {r}" for r in file_roots] + \
+                  [f"Claude Code project {c}" for c in claude_projects]
         built = datetime.fromtimestamp((wiki_dir / "plan.json").stat().st_mtime)
         freshest = max_ts(_specs())
         lines = [f"WIKI: {chat_dir.name} · {len(pages)} pages · "

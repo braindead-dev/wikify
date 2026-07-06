@@ -284,7 +284,7 @@ def workspace_header(db, chat_ids, msgs, participants) -> str:
     header = (f"WIKI WORKSPACE: a group chat of {len(participants)} people "
               f"({', '.join(participants)}), {msgs[0].ts.date()} to {msgs[-1].ts.date()}, "
               f"{len(msgs)} messages.")
-    im_ids, ig_keys, file_roots = parse_specs(chat_ids)
+    im_ids, ig_keys, file_roots, claude_projects = parse_specs(chat_ids)
     if ig_keys and im_ids:
         titles = [InstagramExport().title(k) for k in ig_keys]
         header += (" The group talks across channels — iMessage and Instagram ("

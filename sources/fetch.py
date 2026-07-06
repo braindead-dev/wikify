@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .imessage import MessagesDB
+from .claude import ClaudeSessions
 from .files import FilesSource
 from .instagram import InstagramExport
 
@@ -30,20 +31,23 @@ def canonical_spec(spec) -> str:
 
 
 def parse_specs(specs) -> tuple:
-    """Split mixed specs into (imessage row ids, instagram thread keys, file folders)."""
-    im_ids, ig_keys, file_roots = [], [], []
+    """Split mixed specs into (imessage ids, instagram threads, file folders,
+    claude projects)."""
+    im_ids, ig_keys, file_roots, claude_projects = [], [], [], []
     for spec in specs:
         s = str(spec).strip()
         if s.startswith("ig:"):
             ig_keys.append(s[3:])
         elif s.startswith("files:"):
             file_roots.append(s[6:])
+        elif s.startswith("claude:"):
+            claude_projects.append(s[7:])
         elif s.isdigit():
             im_ids.append(int(s))
         else:
             raise ValueError(f"unknown spec {s!r} — use a chat row id, ig:<thread>, "
-                             "or files:<folder>")
-    return im_ids, ig_keys, file_roots
+                             "files:<folder>, or claude:<project>")
+    return im_ids, ig_keys, file_roots, claude_projects
 
 
 def fetch_streams(specs, until=None):
@@ -53,7 +57,7 @@ def fetch_streams(specs, until=None):
     never interleave in one transcript, while ids and timestamps keep the
     overall record one timeline. iMessage row ids passed together are treated
     as one stream (sequential eras of the same chat)."""
-    im_ids, ig_keys, file_roots = parse_specs(specs)
+    im_ids, ig_keys, file_roots, claude_projects = parse_specs(specs)
     streams, db = [], None
     if im_ids:
         db = MessagesDB(identities=_identities())
@@ -68,6 +72,11 @@ def fetch_streams(specs, until=None):
         src = FilesSource(root)
         streams.append({"label": f"Documents · {src.root.name}", "kind": "document",
                         "messages": src.messages(until=until)})
+    if claude_projects:
+        cs = ClaudeSessions()
+        for proj in claude_projects:
+            streams.append({"label": f"Claude Code · {proj.split('-')[-1]}", "kind": "chat",
+                            "messages": cs.messages(proj, until=until)})
     return [s for s in streams if s["messages"]], db
 
 
