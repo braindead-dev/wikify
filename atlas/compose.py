@@ -439,13 +439,23 @@ def plan_pages(llm, obs_items, workspace, cfg, trace, trace_dir=None) -> list:
             futures = [pool.submit(one_shard, i, sh) for i, sh in enumerate(shards)]
             for f in futures:
                 candidates += (f.result().get("pages") or [])
-        lines = "\n".join(f"- {c.get('id')} \"{c.get('title')}\" ({c.get('type')}) "
-                           f"aliases={c.get('aliases')}" for c in candidates)
         merge_note = ("These candidate pages were proposed from chronological parts "
                       "of the record. MERGE them into one final tree: unify duplicates "
                       "(same subject proposed by several parts — union their aliases), "
                       "keep every distinct subject, exactly one page per human. ")
-        out = _plan_call(llm, lines, len(candidates), merge_note, workspace, cfg, trace)
+
+        def merge(cands):
+            lines = "\n".join(f"- {c.get('id')} \"{c.get('title')}\" ({c.get('type')}) "
+                               f"aliases={c.get('aliases')}" for c in cands)
+            return _plan_call(llm, lines, len(cands), merge_note, workspace, cfg, trace)
+
+        # tree-reduce: however many shards proposed, merges stay context-sized
+        while len(candidates) > 400:
+            groups = [candidates[i:i + 300] for i in range(0, len(candidates), 300)]
+            with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+                rounds = list(pool.map(lambda g: merge(g).get("pages") or [], groups))
+            candidates = [c for r in rounds for c in r]
+        out = merge(candidates)
     pages, seen = [], set()
     for p in (out.get("pages") or []):
         pid = str(p.get("id", "")).strip()
@@ -537,17 +547,67 @@ def extend_plan(llm, new_items, state, workspace, cfg, trace, effort=None) -> li
     return added
 
 
+_ROUTE_TREE_MAX = 400          # above this, routing switches to candidate sets
+
+
+def _title_index(entity_pages):
+    """Tiny in-memory BM25 over page titles/aliases only — the candidate
+    shortlister for routing at scale (no file reads, rebuilt per run)."""
+    import math
+    docs = {}
+    for pid, pg in entity_pages.items():
+        terms = re.findall(r"[a-z0-9']+", (pid.replace("/", " ") + " " + pg["title"]
+                                           + " " + " ".join(pg.get("aliases", []))).lower())
+        tf = {}
+        for t in terms:
+            tf[t] = tf.get(t, 0) + 1
+        docs[pid] = tf
+    df = {}
+    for tf in docs.values():
+        for t in tf:
+            df[t] = df.get(t, 0) + 1
+    n = len(docs) or 1
+    idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
+    return docs, idf
+
+
+def _candidates(index, o, k=20):
+    docs, idf = index
+    terms = re.findall(r"[a-z0-9']+", (o["title"] + " " + " ".join(o.get("people", []))).lower())
+    scored = []
+    for pid, tf in docs.items():
+        sc = sum(idf.get(t, 0) for t in terms if t in tf)
+        if sc > 0:
+            scored.append((sc, pid))
+    scored.sort(reverse=True)
+    return [pid for _, pid in scored[:k]]
+
+
 def route_batch(llm, batch, state, workspace, cfg, trace) -> dict:
     """batch: list of (key, obs). Returns {key: [page ids]} for every key.
     Routing sees only TOP-LEVEL pages — a parent represents its whole subtree,
-    and family-level assignment distributes to children afterwards — so the
-    routing enum stays small no matter how deep the tree grows."""
+    and family-level assignment distributes to children afterwards. Past
+    _ROUTE_TREE_MAX pages, each observation carries a BM25 candidate shortlist
+    and the call's page universe is the batch's candidate union — routing cost
+    stays constant no matter how many pages the wiki grows."""
     entity_pages = {pid: p for pid, p in state["pages"].items()
                     if p["type"] != "analysis" and not _is_child(pid)}
+    if len(entity_pages) > _ROUTE_TREE_MAX:
+        index = _title_index(entity_pages)
+        cand = {n: _candidates(index, o) for n, (_, o) in enumerate(batch)}
+        universe = {pid: entity_pages[pid]
+                    for pids in cand.values() for pid in pids if pid in entity_pages}
+        entity_pages = universe
+        lines = "\n".join(_obs_line(n, o) + f" · candidates: {'|'.join(cand[n]) or '-'}"
+                           for n, (_, o) in enumerate(batch))
+        user = (f"OBSERVATIONS (each with its candidate pages):\n{lines}\n\n"
+                "Route every observation — normally to its candidates; any listed "
+                "page is allowed when the candidates miss.")
+    else:
+        lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(batch))
+        user = f"OBSERVATIONS:\n{lines}\n\nRoute every observation."
     system = (_prompt("route.md").replace("{workspace}", workspace)
               + "\n\nPAGE TREE:\n" + _page_tree({"pages": entity_pages}))
-    lines = "\n".join(_obs_line(n, o) for n, (_, o) in enumerate(batch))
-    user = f"OBSERVATIONS:\n{lines}\n\nRoute every observation."
     out = llm.complete_json(system, user, effort=cfg.effort,
                             schema=route_schema(entity_pages), schema_name="route",
                             trace=trace, max_tokens=cfg.max_tokens, temperature=cfg.temperature)
