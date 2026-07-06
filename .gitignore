@@ -11,5 +11,5 @@ __pycache__/
 .DS_Store
 
 .env
-# per-chat wiki data (real people — stays local)
-chats/
+# wiki data — archive, pages, grants, audit log (real people; stays local)
+wikis/
