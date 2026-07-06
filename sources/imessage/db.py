@@ -70,6 +70,7 @@ class Message:
     system: str | None = None                          # rename/add/remove/leave
     reactions: dict = field(default_factory=dict)      # label -> [names]
     guid: str | None = None
+    src: str = ""                                      # canonical source spec
 
 
 def _to_dt(date) -> datetime:
@@ -273,6 +274,9 @@ class MessagesDB:
             f"WHERE {where} "
             f"ORDER BY m.date ASC, m.ROWID ASC", params).fetchall()
 
+        chat_of = {mid: cid for mid, cid in cur.execute(
+            f"SELECT message_id, chat_id FROM chat_message_join "
+            f"WHERE chat_id IN ({placeholders})", chat_ids)}
         reaction_state: dict = {}     # (target_guid, reactor) -> label or None
         messages: list[Message] = []
         index_by_guid: dict = {}
@@ -330,6 +334,8 @@ class MessagesDB:
             parent = msg.reply_to
             msg.reply_to = snippet_by_guid.get(parent) if (parent and parent != msg.guid) else None
 
+        for m in messages:
+            m.src = str(chat_of.get(m.rowid, chat_ids[0]))
         return messages
 
     def message(self, rowid, context=0) -> list[Message]:

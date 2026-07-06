@@ -137,7 +137,7 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
     until = datetime.fromisoformat(config.until) if config.until else None
     streams, db = fetch_streams(chat_ids, until=until)
     msgs = [m for s in streams for m in s["messages"]]
-    import_items(chat_dir, sorted(msgs, key=lambda m: m.ts))
+    import_items(sorted(msgs, key=lambda m: m.ts))
     valid_ids = {m.rowid for m in msgs}
     chat_msgs = [m for st in streams if st.get("kind", "chat") == "chat"
                  for m in st["messages"]]

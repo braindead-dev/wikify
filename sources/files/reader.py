@@ -66,5 +66,6 @@ class FilesSource:
             base = file_block(f"{self.root.name}/{rel}")
             for i, para in enumerate(_paragraphs(f.read_text(errors="replace"))):
                 out.append(Message(ts=ts, sender=self.author, text=f"({rel}) {para}",
-                                   is_from_me=True, rowid=base + i))
+                                   is_from_me=True, rowid=base + i,
+                                   src=f"files:{self.root}"))
         return out

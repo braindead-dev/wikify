@@ -124,7 +124,8 @@ class InstagramExport:
                     self._name(r.get("actor", "")))
             out.append(Message(ts=ts, sender=self._name(m.get("sender_name", "")), text=text,
                                is_from_me=False, rowid=base + i, attachments=tags,
-                               attachment_paths=paths, reactions=reactions))
+                               attachment_paths=paths, reactions=reactions,
+                               src=f"ig:{key}"))
         return out
 
     def messages(self, thread_keys, until=None) -> list:

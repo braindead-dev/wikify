@@ -1,7 +1,7 @@
 """Transcribe audio attachments (voice notes, calls) so Layer 1 hears them.
 
 The audio twin of `caption.py`, and the same shape on purpose: a shared,
-versioned, incrementally-written cache (`chats/_transcripts.json`) keyed by
+versioned, incrementally-written cache (`wikis/_transcripts.json`) keyed by
 attachment path, so every source a platform adapter yields — iMessage voice
 notes, Instagram audio, exported call recordings — flows through one module.
 Audio is normalized to wav with macOS `afconvert` (no extra dependencies).
@@ -22,7 +22,7 @@ from sources.fetch import fetch
 from .llm import LLMClient
 from .store import _atomic_write
 
-CACHE = Path("chats/_transcripts.json")
+CACHE = Path("wikis/_transcripts.json")
 _PROMPT_VERSION = 1
 _PROMPT = (
     "Transcribe this audio from a private chat archive verbatim. If several people "

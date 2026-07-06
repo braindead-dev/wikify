@@ -5,7 +5,7 @@
     atlas wiki <slug>                        # Layer 2: observations → wiki pages
     atlas wiki <slug> --stage plan           # run/inspect one sublayer at a time
 
-Everything for a run lives in chats/<slug>/ (observations.json, manifest.json,
+Everything for a run lives in wikis/<slug>/ (observations.json, manifest.json,
 chunks/, traces/, wiki/). Any config knob is overridable via flags.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ def _chat_ids(args, chat_dir: Path):
 
 
 def cmd_extract(args):
-    chat_dir = Path("chats") / args.slug
+    chat_dir = Path("wikis") / args.slug
     if args.redo:                        # mark specific chunks pending so the run redoes them
         path = chat_dir / "manifest.json"
         manifest = json.loads(path.read_text())
@@ -77,7 +77,7 @@ def cmd_extract(args):
 
 
 def cmd_wiki(args):
-    chat_dir = Path("chats") / args.slug
+    chat_dir = Path("wikis") / args.slug
     if args.questions:
         path = chat_dir / "wiki" / "questions.json"
         open_qs = [q for q in (json.loads(path.read_text()) if path.exists() else [])
@@ -109,7 +109,7 @@ def cmd_update(args):
     new/changed chunks, fold into the wiki, render, and sync when configured.
     Every stage is a no-op when nothing changed."""
     import sys as _sys
-    chat_dir = Path("chats") / args.slug
+    chat_dir = Path("wikis") / args.slug
     root = Path(__file__).resolve().parents[1]
     plist = Path.home() / "Library" / "LaunchAgents" / f"com.atlas.update.{args.slug}.plist"
     if args.unschedule:
@@ -160,7 +160,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("extract", help="Layer 1: chat → cited observations")
-    e.add_argument("slug", help="name of this workspace; everything lives in chats/<slug>/")
+    e.add_argument("slug", help="name of this workspace; everything lives in wikis/<slug>/")
     e.add_argument("--chats", help="comma-separated chat row ids (see `imsg chats`); "
                                    "only needed on the first run")
     e.add_argument("--fresh", action="store_true", help="discard the existing run and redo it")
@@ -170,7 +170,7 @@ def main(argv=None):
     e.set_defaults(fn=cmd_extract)
 
     w = sub.add_parser("wiki", help="Layer 2: observations → wiki pages")
-    w.add_argument("slug", help="workspace under chats/<slug>/ (needs observations.json)")
+    w.add_argument("slug", help="workspace under wikis/<slug>/ (needs observations.json)")
     w.add_argument("--fresh", action="store_true", help="discard the existing wiki and redo it")
     w.add_argument("--stage", choices=["plan", "route", "all"], default="all",
                    help="stop after this sublayer (for inspection)")
@@ -186,48 +186,48 @@ def main(argv=None):
     w.set_defaults(fn=cmd_wiki)
 
     c = sub.add_parser("caption", help="caption image attachments so extraction sees pictures")
-    c.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
+    c.add_argument("slug", help="workspace under wikis/<slug>/ (chat ids from its manifest)")
     c.add_argument("--chats", help="comma-separated chat row ids (defaults to the manifest's)")
     c.add_argument("--model", default="gemini-flash")
     c.add_argument("--workers", type=int, default=32)
     c.add_argument("--limit", type=int, help="only caption this many (for trying things out)")
     c.set_defaults(fn=lambda a: build_captions(
-        _chat_ids(a, Path("chats") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
+        _chat_ids(a, Path("wikis") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
 
     tr = sub.add_parser("transcribe", help="transcribe audio attachments so extraction hears them")
-    tr.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
+    tr.add_argument("slug", help="workspace under wikis/<slug>/ (chat ids from its manifest)")
     tr.add_argument("--chats", help="comma-separated chat specs (defaults to the manifest's)")
     tr.add_argument("--model", default="gemini-flash")
     tr.add_argument("--workers", type=int, default=16)
     tr.add_argument("--limit", type=int)
     tr.set_defaults(fn=lambda a: build_transcripts(
-        _chat_ids(a, Path("chats") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
+        _chat_ids(a, Path("wikis") / a.slug), model=a.model, workers=a.workers, limit=a.limit))
 
     f = sub.add_parser("faces", help="cluster faces in photos; owner names them via questions")
-    f.add_argument("slug", help="workspace under chats/<slug>/")
+    f.add_argument("slug", help="workspace under wikis/<slug>/")
     f.add_argument("--chats", help="comma-separated chat row ids (defaults to the manifest's)")
     _config_flags(f, FaceConfig)
-    f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("chats") / a.slug),
-                                            Path("chats") / a.slug / "wiki",
+    f.set_defaults(fn=lambda a: build_faces(_chat_ids(a, Path("wikis") / a.slug),
+                                            Path("wikis") / a.slug / "wiki",
                                             _config_from(a, FaceConfig)))
 
     lg = sub.add_parser("log", help="view the access audit trail (who/what/when via every channel)")
     lg.add_argument("slug")
     lg.add_argument("--tail", type=int, default=30)
-    lg.set_defaults(fn=lambda a: [print(f"{r[0]}  {r[1]}/{r[2]}  {r[3][:60]}  → {r[4][:70]}  {r[5]}ms")
-                                  for r in read_log(Path("chats") / a.slug, a.tail)] and None)
+    lg.set_defaults(fn=lambda a: [print(f"{r[0]}  [{r[1]}] {r[2]}/{r[3]}  {r[4][:52]}  → {r[5][:64]}  {r[6]}ms")
+                                  for r in read_log(a.slug, a.tail)] and None)
 
     be = sub.add_parser("bench", help="retrieval benchmark: LLM probes → hit@1/hit@5/MRR")
     be.add_argument("slug")
     be.add_argument("--n", type=int, default=40)
-    be.set_defaults(fn=lambda a: run_bench(Path("chats") / a.slug, n=a.n))
+    be.set_defaults(fn=lambda a: run_bench(Path("wikis") / a.slug, n=a.n))
 
     m = sub.add_parser("mcp", help="serve the wiki as an MCP server (stdio) for any AI client")
-    m.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
-    m.set_defaults(fn=lambda a: serve(Path("chats") / a.slug))
+    m.add_argument("slug", help="workspace under wikis/<slug>/ (needs a built wiki)")
+    m.set_defaults(fn=lambda a: serve(Path("wikis") / a.slug))
 
     u = sub.add_parser("update", help="one incremental pass: caption → extract → wiki → render → sync")
-    u.add_argument("slug", help="workspace under chats/<slug>/ (chat ids from its manifest)")
+    u.add_argument("slug", help="workspace under wikis/<slug>/ (chat ids from its manifest)")
     u.add_argument("--chats", help="comma-separated chat specs (defaults to the manifest's)")
     u.add_argument("--to", help="sync target repo (remembered after first use)")
     u.add_argument("--schedule", metavar="N{m,h,d}",
@@ -236,23 +236,23 @@ def main(argv=None):
     u.set_defaults(fn=cmd_update)
 
     sy = sub.add_parser("sync", help="deploy the rendered site into a git repo (renders first)")
-    sy.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
-    sy.add_argument("--to", help="git repo path (remembered in chats/<slug>/sync.json)")
+    sy.add_argument("slug", help="workspace under wikis/<slug>/ (needs a built wiki)")
+    sy.add_argument("--to", help="git repo path (remembered in wikis/<slug>/sync.json)")
     sy.add_argument("--no-render", action="store_true", help="sync the site as-is")
-    sy.set_defaults(fn=lambda a: sync_site(Path("chats") / a.slug, to=a.to,
+    sy.set_defaults(fn=lambda a: sync_site(Path("wikis") / a.slug, to=a.to,
                                            render=not a.no_render))
 
     co = sub.add_parser("correct", help="fold a maintainer correction into the wiki")
-    co.add_argument("slug", help="workspace under chats/<slug>/")
+    co.add_argument("slug", help="workspace under wikis/<slug>/")
     co.add_argument("text", help="the correction in plain words (may cite [#id] messages)")
     _config_flags(co, ComposeConfig)
-    co.set_defaults(fn=lambda a: add_correction(Path("chats") / a.slug, a.text,
+    co.set_defaults(fn=lambda a: add_correction(Path("wikis") / a.slug, a.text,
                                                 _config_from(a, ComposeConfig)))
 
     r = sub.add_parser("render", help="render the wiki as a Wikipedia-style static site")
-    r.add_argument("slug", help="workspace under chats/<slug>/ (needs a built wiki)")
-    r.add_argument("--out", help="output directory (default: chats/<slug>/site)")
-    r.set_defaults(fn=lambda a: render_site(Path("chats") / a.slug, out=a.out))
+    r.add_argument("slug", help="workspace under wikis/<slug>/ (needs a built wiki)")
+    r.add_argument("--out", help="output directory (default: wikis/<slug>/site)")
+    r.set_defaults(fn=lambda a: render_site(Path("wikis") / a.slug, out=a.out))
 
     args = p.parse_args(argv)
     args.fn(args)

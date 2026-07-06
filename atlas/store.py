@@ -1,6 +1,6 @@
 """On-disk layout for a Layer 1 run — streamed, resumable, order-preserving.
 
-    chats/<slug>/
+    wikis/<slug>/
       manifest.json        run config + per-chunk status (pending | done | failed)
       chunks/NNN.json      one file per chunk, written the instant it finishes
       observations.json    every observation, assembled in chunk order

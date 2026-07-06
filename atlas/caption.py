@@ -1,6 +1,6 @@
 """Caption image attachments with a vision model, so Layer 1 sees pictures.
 
-Captions are cached in `chats/_captions.json`, keyed by attachment path — shared
+Captions are cached in `wikis/_captions.json`, keyed by attachment path — shared
 across wikis, written incrementally, so re-running only captions new images.
 Images are normalized with macOS `sips` (handles HEIC, resizes) — no extra
 dependencies. Extraction then renders `[img: <caption>]` in transcript lines.
@@ -20,7 +20,7 @@ from sources.fetch import fetch
 from .llm import LLMClient
 from .store import _atomic_write
 
-CACHE = Path("chats/_captions.json")
+CACHE = Path("wikis/_captions.json")
 # Bump when the prompt changes — cached captions from an older prompt are stale.
 _PROMPT_VERSION = 2
 _PROMPT = (

@@ -72,7 +72,7 @@ sources + the atlas pipeline:
   portraits; topic pages trace a joke from origin to evolution; event pages
   reconstruct what happened.
 
-  Both layers stream to `chats/<slug>/` as they run, are resumable after any
+  Both layers stream to `wikis/<slug>/` as they run, are resumable after any
   interruption, retry failures, and keep full request/response traces. Re-running
   is incremental: new messages extract as new chunks, route into the existing
   tree, and rewrite only the pages they touch — `wiki is up to date` costs zero

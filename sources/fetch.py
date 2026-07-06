@@ -20,6 +20,15 @@ def _identities():
     return "identities.json" if Path("identities.json").exists() else None
 
 
+def canonical_spec(spec) -> str:
+    """The normalized form of a source spec — matches the `src` tag adapters
+    stamp on every item, so a wiki's scope is exactly `src IN (its specs)`."""
+    s = str(spec).strip()
+    if s.startswith("files:"):
+        return f"files:{Path(s[6:]).expanduser()}"
+    return s
+
+
 def parse_specs(specs) -> tuple:
     """Split mixed specs into (imessage row ids, instagram thread keys, file folders)."""
     im_ids, ig_keys, file_roots = [], [], []

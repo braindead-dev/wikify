@@ -9,8 +9,8 @@ photos, ask the owner who they are, and enrich captions with the names.
                             change up through normal hash invalidation
 
 State is global (attachments are shared across wikis): embeddings in
-`chats/_faces.npz`, clusters + names in `chats/_faces.json`, sample crops under
-`chats/_faces/<face-id>/`. Requires the optional deps: `pip install
+`wikis/_faces.npz`, clusters + names in `wikis/_faces.json`, sample crops under
+`wikis/_faces/<face-id>/`. Requires the optional deps: `pip install
 'imessage-analysis[faces]'`. Everything runs locally.
 """
 from __future__ import annotations
@@ -27,9 +27,9 @@ from .caption import _PROMPT_VERSION, load_captions
 from .config import FaceConfig
 from .store import _atomic_write
 
-FACES_DIR = Path("chats/_faces")
-STATE = Path("chats/_faces.json")
-EMBED = Path("chats/_faces.npz")
+FACES_DIR = Path("wikis/_faces")
+STATE = Path("wikis/_faces.json")
+EMBED = Path("wikis/_faces.npz")
 
 
 def _deps():

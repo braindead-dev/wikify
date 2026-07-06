@@ -79,6 +79,7 @@ def build_server(chat_dir: Path) -> FastMCP:
     short = ident["subject"].split(": ", 1)[-1].split(". ")[0][:180]
     mcp = FastMCP(f"{chat_dir.name}-wiki", instructions=INSTRUCTIONS.format(**ident))
     cache = {}
+    channel = "mcp"
 
     def data():
         return json.loads((chat_dir / "observations.json").read_text())
@@ -86,14 +87,17 @@ def build_server(chat_dir: Path) -> FastMCP:
     def state():
         return json.loads((wiki_dir / "plan.json").read_text())
 
+    def _specs():
+        return data()["chat_ids"]
+
     def _store_mtime():
-        path = chat_dir / "store.db"
-        return path.stat().st_mtime if path.exists() else 0.0
+        from .store_db import ARCHIVE
+        return ARCHIVE.stat().st_mtime if ARCHIVE.exists() else 0.0
 
     def messages():
         mtime = _store_mtime() or (chat_dir / "observations.json").stat().st_mtime
         if cache.get("mtime") != mtime:            # wiki rebuilt → reload
-            msgs = load_items(chat_dir)            # self-contained artifact first;
+            msgs = load_items(_specs())            # the archive, scoped to this wiki;
             if msgs is None:                       # live sources only as fallback
                 msgs, _ = fetch(data()["chat_ids"])
             cache.update(msgs=msgs, by_id={m.rowid: m for m in msgs}, mtime=mtime)
@@ -116,7 +120,7 @@ def build_server(chat_dir: Path) -> FastMCP:
                            else out.splitlines()[0][:120]) + f" ({len(out)}ch)"
             else:
                 summary = type(out).__name__
-            log_access(chat_dir, "mcp", fn.__name__, k or list(a), summary,
+            log_access(chat_dir.name, channel, fn.__name__, k or list(a), summary,
                        (time.time() - t0) * 1000)
             return out
         return wrap
@@ -138,7 +142,7 @@ def build_server(chat_dir: Path) -> FastMCP:
                   [f"Instagram thread {k}" for k in ig_keys] + \
                   [f"documents {r}" for r in file_roots]
         built = datetime.fromtimestamp((wiki_dir / "plan.json").stat().st_mtime)
-        freshest = max_ts(chat_dir)
+        freshest = max_ts(_specs())
         lines = [f"WIKI: {chat_dir.name} · {len(pages)} pages · "
                  f"{d['count']} observations from {', '.join(sources)}",
                  f"last build: {built:%Y-%m-%d %H:%M} · newest message: "
@@ -179,7 +183,7 @@ def build_server(chat_dir: Path) -> FastMCP:
 
     def _freshness(text: str) -> str:
         ids = [int(i) for i in re.findall(r"\[#(\d+)", text)]
-        newest = max_ts(chat_dir, ids[:900]) if ids else None
+        newest = max_ts(_specs(), ids[:900]) if ids else None
         return f"{newest:%Y-%m-%d}" if newest else "?"
 
     @mcp.tool()
@@ -227,7 +231,7 @@ def build_server(chat_dir: Path) -> FastMCP:
         def scan_msgs():
             plain = not re.search(r"[\\^$.|?*+()\[\]{}]", pattern)
             if plain and (chat_dir / "store.db").exists():
-                found = fts_search(chat_dir, " ".join(
+                found = fts_search(_specs(), " ".join(
                     f'"{w}"' for w in pattern.split()), limit=max_results * 2,
                     since=since, until=until)
                 hits.extend(f"#{m.rowid} {m.ts:%Y-%m-%d} {m.sender}: {m.text[:180]}"
@@ -321,7 +325,7 @@ def build_server(chat_dir: Path) -> FastMCP:
     def resolve(citation: int, context: int = 4) -> str:
         """Resolve a [#id] citation to the original message with surrounding
         conversation — the ground truth behind any wiki claim."""
-        window = item_window(chat_dir, citation, context)
+        window = item_window(_specs(), citation, context)
         if not window:
             return f"no message #{citation}"
         return "\n".join(
@@ -333,7 +337,7 @@ def build_server(chat_dir: Path) -> FastMCP:
     def get_image(message_id: int) -> Image:
         """Fetch the photo attached to a message (find message ids via search
         or page citations near [img: …] captions)."""
-        m = item(chat_dir, message_id)
+        m = item(_specs(), message_id)
         paths = [p for p in (m.attachment_paths if m else []) if p and Path(p).exists()]
         if not paths:
             raise ValueError(f"no image on message #{message_id}")
@@ -360,7 +364,7 @@ def build_server(chat_dir: Path) -> FastMCP:
                 text = path.read_text()
                 material.append(f"=== {pid} (cited through {_freshness(text)}) ===\n"
                                 + text[:8000])
-        return (f"RECORD ENDS: {max_ts(chat_dir):%Y-%m-%d} — anything after "
+        return (f"RECORD ENDS: {max_ts(_specs()):%Y-%m-%d} — anything after "
                 "this date is outside the knowledge base.\n\n" + "\n\n".join(material))
 
     @mcp.tool(description=f"Assembled context for any question about {short}: the most "
