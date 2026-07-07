@@ -108,9 +108,11 @@ class LLMClient:
         constrained to the schema at decode time — not merely asked to emit JSON.
 
         Transient errors are retried with backoff and each retry is logged (not
-        silent). A truncated response (finish_reason='length') is not retried —
-        it would only truncate again — and fails fast with a clear reason. On
-        exhaustion raises `LLMError` carrying the raw output and finish reason.
+        silent). A truncated response (finish_reason='length') is almost always
+        reasoning burning the output budget, so it gets one salvage attempt at
+        effort low; truncating again means the output is genuinely too long and
+        fails fast with a clear reason. On exhaustion raises `LLMError`
+        carrying the raw output and finish reason.
         If `trace` is given it is called with a full record of the request and
         outcome (model, params, exact prompt, raw output, finish reason)."""
         content = user
@@ -153,8 +155,11 @@ class LLMClient:
                        "duration_s": round(time.time() - started, 2), **outcome,
                        "system": system, "user": user, "response": last_raw})
 
-        for attempt in range(self.max_retries):
-            state["attempts"] = attempt + 1
+        attempts_left = self.max_retries
+        salvaged = False
+        while attempts_left > 0:
+            attempts_left -= 1
+            state["attempts"] += 1
             try:
                 resp = self._client.chat.completions.create(
                     model=self.model_id, messages=messages, max_tokens=max_tokens,
@@ -172,12 +177,22 @@ class LLMClient:
                 return data
             except Exception as e:                       # transient API or JSON error
                 last_err = e
-                if state["finish_reason"] == "length":   # truncated — retrying won't help
-                    break
-                if attempt < self.max_retries - 1:
-                    print(f"  [llm] retry {attempt + 1}/{self.max_retries}: "
+                if state["finish_reason"] == "length":
+                    # already at low, or thinking off: the output itself is too long
+                    if salvaged or (eff is not None and
+                                    str(eff).lower() in ("low", "none", "off", "false")):
+                        break
+                    salvaged, eff = True, "low"
+                    extra["reasoning"] = {"effort": "low"}
+                    attempts_left = max(attempts_left, 1)
+                    state["finish_reason"] = None
+                    print("  [llm] truncated — salvage attempt at effort low",
+                          file=sys.stderr, flush=True)
+                elif attempts_left > 0:
+                    print(f"  [llm] retry {state['attempts']}/{self.max_retries}: "
                           f"{type(e).__name__}: {str(e)[:100]}", file=sys.stderr, flush=True)
-                    time.sleep(_retry_after(e) or (0.4 * (2 ** attempt) * random.uniform(0.9, 1.1)))
+                    time.sleep(_retry_after(e) or
+                               (0.4 * (2 ** (state["attempts"] - 1)) * random.uniform(0.9, 1.1)))
 
         detail = (f"output truncated (finish_reason=length, provider={state['provider']}) — "
                   "raise max_tokens or lower chunk_tokens"

@@ -19,7 +19,7 @@ from sources.imessage.render import format_message
 from .caption import load_captions
 from .transcribe import load_transcripts
 from .config import ExtractConfig
-from .llm import LLMClient, LLMError
+from .llm import LLMClient
 from .observation import Observation, observations_schema
 from .store_db import import_items
 from .store import RunStore
@@ -195,13 +195,7 @@ def build_observations(chat_dir, chat_ids, config: ExtractConfig = None,
         sys_i, schema_i = (doc_system, doc_schema) if doc else (system, schema)
         kw = dict(effort=config.effort, max_tokens=config.max_tokens or None,
                   trace=trace_sink(i), temperature=config.temperature)
-        try:
-            obs = extract_chunk(llm, sys_i, chunks[i]["text"], schema_i, **kw)
-        except LLMError as e:
-            if "truncated" not in str(e):
-                raise
-            kw["effort"] = "low"    # truncation = reasoning burn — rerun as a scan
-            obs = extract_chunk(llm, sys_i, chunks[i]["text"], schema_i, **kw)
+        obs = extract_chunk(llm, sys_i, chunks[i]["text"], schema_i, **kw)
         if len(obs) < config.min_density * chunks[i]["n_messages"]:
             retry = extract_chunk(llm, sys_i, chunks[i]["text"], schema_i, **kw)
             if len(retry) > len(obs):
