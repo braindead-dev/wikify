@@ -404,8 +404,11 @@ def plan_pages(llm, obs_items, workspace, cfg, trace, trace_dir=None) -> list:
             break
     total = sum(len(l) + 1 for l in all_lines)
     if total <= budget:
+        # a scan-sized input at full effort burns the output budget on
+        # reasoning before emitting — same treatment as shards
         out = _plan_call(llm, "\n".join(all_lines), len(obs_items), "ALL ",
-                         workspace, cfg, trace)
+                         workspace, cfg, trace,
+                         "low" if total > 200_000 else None)
     else:
         n_shards = -(-total // budget)
         per = -(-len(all_lines) // n_shards)
