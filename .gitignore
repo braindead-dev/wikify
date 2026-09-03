@@ -8,8 +8,21 @@ identities.json
 __pycache__/
 *.pyc
 *.egg-info/
+.venv/
+venv/
+build/
+dist/
+.coverage
+.pytest_cache/
 .DS_Store
 
-.env
+.env*
+!.env.example
+.direnv/
+.vercel/
+*.pem
+*.key
+*.p12
+*.pfx
 # wiki data — archive, pages, grants, audit log (real people; stays local)
 wikis/

@@ -1,7 +1,7 @@
 """Grants — provisioned access to a wiki.
 
-    python3 -m atlas grant salmin --name slackbot --tools context,find,read_page,resolve
-    python3 -m atlas mcp salmin --grant <token>
+    python3 -m atlas grant my-chat --name slackbot --tools context,find,read_page,resolve
+    python3 -m atlas mcp my-chat --grant <token>
     python3 -m atlas grants [--revoke NAME]
 
 A grant is a capability: WHICH wiki (a scope over the archive), WHICH tools,

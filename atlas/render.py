@@ -20,6 +20,7 @@ import json
 import re
 import shutil
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from sources.fetch import fetch
 
@@ -69,6 +70,7 @@ _LINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 _MDLINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _ITAL_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_LINK_SCHEMES = {"http", "https", "mailto"}
 
 
 def _frontmatter(text):
@@ -120,8 +122,26 @@ def _inline(s, page, tree):
             up = "../" * (page.pid.count("/") if page.pid else 1)
             return f'<a href="{up}{pid}.html">{text}</a>'
         return (f'<a class="new" title="page not written (too few observations)">{text}</a>')
+
+    def markdown_link(m):
+        # Model output and imported documents are untrusted. Decode character
+        # references before validating so `javascript&#58;...` cannot disguise a
+        # dangerous scheme, then quote-escape the final attribute value.
+        href = m.group(2).strip()
+        for _ in range(3):
+            decoded = html.unescape(href)
+            if decoded == href:
+                break
+            href = decoded
+        parsed = urlsplit(href)
+        if ((parsed.scheme and parsed.scheme.lower() not in _LINK_SCHEMES)
+                or (not parsed.scheme and parsed.netloc)):
+            return m.group(1)
+        href = html.escape(href.replace(".md", ".html"), quote=True)
+        return f'<a href="{href}">{m.group(1)}</a>'
+
     s = _LINK_RE.sub(wikilink, s)
-    s = _MDLINK_RE.sub(lambda m: f'<a href="{m.group(2).replace(".md", ".html")}">{m.group(1)}</a>', s)
+    s = _MDLINK_RE.sub(markdown_link, s)
     s = _BOLD_RE.sub(r"<b>\1</b>", s)
     s = _ITAL_RE.sub(r"<i>\1</i>", s)
     return s
@@ -162,7 +182,8 @@ def _body_html(body, page, tree):
             flush()
             items = []
             while i < len(lines) and re.match(r"^\d+\.\s", lines[i].strip()):
-                items.append(f"<li>{_inline(re.sub(r'^\d+\.\s*', '', lines[i].strip()), page, tree)}</li>")
+                item = re.sub(r"^\d+\.\s*", "", lines[i].strip())
+                items.append(f"<li>{_inline(item, page, tree)}</li>")
                 i += 1
             out.append("<ol>" + "".join(items) + "</ol>")
             continue

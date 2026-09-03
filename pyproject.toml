@@ -6,11 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "wikify"
 version = "0.1.0"
 description = "Read your local iMessage history (imessage) and build a wiki over it (atlas)."
-requires-python = ">=3.9"
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = []                          # imessage is stdlib-only
 
 [project.optional-dependencies]
-atlas = ["openai>=1.0", "python-dotenv"]   # the wiki pipeline (model seam)
+atlas = ["openai>=1.0", "python-dotenv", "mcp>=1.0"]  # pipeline + MCP server
 faces = ["insightface", "onnxruntime", "opencv-python-headless"]  # optional face clustering
 
 [project.scripts]

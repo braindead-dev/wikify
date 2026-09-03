@@ -12,6 +12,17 @@ sources + the atlas pipeline:
 - **`atlas`** — build a cited, Wikipedia-style knowledge base over a conversation.
   A layered pipeline. Needs an OpenRouter key in `.env`.
 
+> [!IMPORTANT]
+> The source readers operate locally, but the model-backed `atlas` commands are
+> not local-only: they send selected conversation text and identity context—and,
+> when requested, images or audio—to OpenRouter and its serving providers. Atlas
+> also stores full model request/response traces locally. Read [PRIVACY.md](PRIVACY.md)
+> before processing private conversations or deploying a rendered site.
+
+Install the local readers alone with `pip install -e .`, or the complete wiki
+pipeline with `pip install -e ".[atlas]"`. Face clustering additionally needs
+`pip install -e ".[atlas,faces]"`.
+
   ```bash
   python3 -m sources chats                             # list chats across all sources
   python3 -m sources show 61280042                     # resolve any citation id
@@ -68,10 +79,14 @@ sources + the atlas pipeline:
   ```
 
   `sync` mirrors the rendered site into a git repo and commits (pushing when a
-  remote exists) — point GitHub/Cloudflare Pages at that repo and the wiki is a
-  website; the target is remembered after the first `--to`. `update` chains
-  caption → extract → wiki → render → sync, each stage a no-op when nothing
-  changed, so scheduling it keeps the site current with the conversation.
+  remote exists) — point GitHub Pages, Cloudflare Pages, or Vercel at that repo
+  and the wiki is a website; the target is remembered after the first `--to`.
+  Static hosts are often public even when their source repository is private.
+  The rendered pages include names, inferred biographical details, and verbatim
+  message excerpts in citations, so configure access protection before pushing
+  private material. `update` chains caption → extract → wiki → render → sync,
+  each stage a no-op when nothing changed, so scheduling it keeps the site
+  current with the conversation.
 
   **Adding a source** is one folder: put an adapter in `sources/<platform>/`
   that yields the shared `Message` type (stable ids in its own range), register
@@ -87,10 +102,12 @@ sources + the atlas pipeline:
   reconstruct what happened.
 
   Both layers stream to `wikis/<slug>/` as they run, are resumable after any
-  interruption, retry failures, and keep full request/response traces. Re-running
-  is incremental: new messages extract as new chunks, route into the existing
-  tree, and rewrite only the pages they touch — `wiki is up to date` costs zero
-  calls. Any config knob is a flag (`--chunk-tokens`, `--model`, `--only`, …).
+  interruption, retry failures, and keep full request/response traces by
+  default. Those traces can contain conversation text and model output; they are
+  git-ignored but remain sensitive local files. Re-running is incremental: new
+  messages extract as new chunks, route into the existing tree, and rewrite only
+  the pages they touch — `wiki is up to date` costs zero calls. Any config knob
+  is a flag (`--chunk-tokens`, `--model`, `--only`, …).
 
 ## imessage
 
@@ -173,7 +190,7 @@ Global: `--db PATH`, `--identities PATH`, `--no-contacts`.
 ## SDK
 
 ```python
-from imessage import MessagesDB
+from sources.imessage import MessagesDB
 
 with MessagesDB() as db:
     for c in db.chats():                 # faithful list of chat rows
@@ -224,8 +241,9 @@ Day headers keep timestamps cheap; reactions fold onto their target message. Wit
 
 ## Requirements
 
-- macOS, Python 3.9+ (stdlib only).
+- macOS, Python 3.10+ (the iMessage reader itself uses only the standard library).
 - Your terminal needs **Full Disk Access** to read `~/Library/Messages`
   (System Settings → Privacy & Security → Full Disk Access).
 
-Everything runs locally; nothing leaves your machine.
+The iMessage reader itself runs locally and does not upload messages. The
+model-backed `atlas` pipeline has a different data flow; see [PRIVACY.md](PRIVACY.md).
